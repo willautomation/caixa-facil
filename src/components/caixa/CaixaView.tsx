@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { NumericKeypad } from "@/components/NumericKeypad";
+import { CaixaProductModal } from "@/components/caixa/CaixaProductModal";
 import { createClient } from "@/lib/supabase/client";
 import { resolveEffectiveUserId } from "@/lib/effective-user";
 import { CategoryNameModal } from "@/components/categories/CategoryNameModal";
@@ -25,7 +26,28 @@ type KeypadTarget = {
   product: Product;
 } | null;
 
-/** Tipos que abrem o teclado em modo valor (manual) antes de ir ao carrinho. */
+type CaixaStep = "categories" | "products";
+
+const CATEGORY_EMOJI_HINTS: [string, string][] = [
+  ["beb", "🥤"],
+  ["refrig", "🥤"],
+  ["água", "💧"],
+  ["sal", "🥟"],
+  ["doc", "🍰"],
+  ["pão", "🥖"],
+  ["lim", "🧹"],
+  ["cig", "🚬"],
+  ["caf", "☕"],
+];
+
+function emojiForCategory(name: string): string {
+  const l = name.toLowerCase();
+  for (const [hint, emoji] of CATEGORY_EMOJI_HINTS) {
+    if (l.includes(hint)) return emoji;
+  }
+  return "📁";
+}
+
 function usesManualValueKeypad(p: Pick<Product, "type">): boolean {
   return p.type === "manual" || p.type === "typed_value";
 }
@@ -43,8 +65,10 @@ function vendingErrorMessage(err: unknown): string {
 export function CaixaView() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [categoryFilter, setCategoryFilter] = useState<"all" | string>("all");
+  const [step, setStep] = useState<CaixaStep>("categories");
+  const [activeCategory, setActiveCategory] = useState<Category | null>(null);
   const [newCategoryOpen, setNewCategoryOpen] = useState(false);
+  const [productModalOpen, setProductModalOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [cart, setCart] = useState<CartLine[]>([]);
   const [loading, setLoading] = useState(true);
@@ -85,27 +109,35 @@ export function CaixaView() {
     [categories]
   );
 
-  const byCategory = useMemo(() => {
-    if (categoryFilter === "all") return products;
+  const productsInActiveCategory = useMemo(() => {
+    if (!activeCategory) return [];
     return products.filter((p) => {
       const effective = p.category_id ?? geralCategoryId;
-      return effective === categoryFilter;
+      return effective === activeCategory.id;
     });
-  }, [products, categoryFilter, geralCategoryId]);
+  }, [products, activeCategory, geralCategoryId]);
 
-  const filtered = useMemo(() => {
+  const filteredProducts = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return byCategory;
-    return byCategory.filter((p) => p.name.toLowerCase().includes(q));
-  }, [byCategory, search]);
+    if (!q) return productsInActiveCategory;
+    return productsInActiveCategory.filter((p) => p.name.toLowerCase().includes(q));
+  }, [productsInActiveCategory, search]);
 
-  const total = useMemo(
-    () => cart.reduce((acc, line) => acc + line.lineTotal, 0),
-    [cart]
-  );
-
+  const total = useMemo(() => cart.reduce((acc, line) => acc + line.lineTotal, 0), [cart]);
   const received = parseMoneyInput(receivedRaw);
   const change = Math.max(0, received - total);
+
+  const goToCategories = () => {
+    setStep("categories");
+    setActiveCategory(null);
+    setSearch("");
+  };
+
+  const openCategory = (c: Category) => {
+    setActiveCategory(c);
+    setStep("products");
+    setSearch("");
+  };
 
   const usedInCartForProduct = (productId: string) =>
     cart
@@ -178,55 +210,31 @@ export function CaixaView() {
     }
     setFinalizing(true);
     try {
-      console.info("[Caixa Fácil] Venda: início", {
-        itensNoCarrinho: cart.length,
-        total,
-        recebido: received,
-        troco: change,
-      });
-
       const supabase = createClient();
       const { userId, errorMessage } = await resolveEffectiveUserId(supabase);
       if (!userId) {
         const msg = errorMessage ?? "Não foi possível identificar o usuário.";
-        console.error("[Caixa Fácil] Erro real na venda:", msg);
         setFinalizeError(msg);
         return;
       }
 
       const neededByProduct = new Map<string, number>();
       for (const line of cart) {
-        if (!line?.productId) {
-          console.warn("[Caixa Fácil] Venda: linha do carrinho sem productId ignorada na contagem de estoque", line);
-          continue;
-        }
+        if (!line?.productId) continue;
         const dec = line.type === "quantity" ? line.quantity : 1;
         neededByProduct.set(line.productId, (neededByProduct.get(line.productId) ?? 0) + dec);
       }
 
-      console.info("[Caixa Fácil] Venda: validação de estoque — necessidade por produto", Object.fromEntries(neededByProduct));
-
       for (const [productId, dec] of neededByProduct) {
         const snap = await resolveProductStockForCart(userId, productId);
-        if (!snap) {
-          console.warn(
-            "[Caixa Fácil] Venda: produto não encontrado no catálogo (local/remoto); sem checagem de estoque para este id:",
-            productId
-          );
-          continue;
-        }
+        if (!snap) continue;
         if (!snap.track_stock) continue;
         if (snap.stock < dec) {
-          const msg = "Estoque insuficiente para um ou mais produtos.";
-          console.error("[Caixa Fácil] Erro real na venda:", msg, { productId, dec, stock: snap.stock });
-          setFinalizeError(msg);
+          setFinalizeError("Estoque insuficiente para um ou mais produtos.");
           return;
         }
       }
 
-      console.info("[Caixa Fácil] Venda: validação de estoque concluída");
-
-      console.info("[Caixa Fácil] Venda: inserindo registro em sales");
       const { data: sale, error: saleErr } = await supabase
         .from("sales")
         .insert({
@@ -240,17 +248,11 @@ export function CaixaView() {
         .single();
 
       if (saleErr || !sale) {
-        console.error("[Caixa Fácil] Erro real na venda (sales):", saleErr ?? "sem id retornado", saleErr);
         throw saleErr ?? new Error("Falha ao registrar venda.");
       }
-      console.info("[Caixa Fácil] Venda: sales OK", { saleId: sale.id });
 
       const productIdsForFk = [...neededByProduct.keys()];
       const validRemoteProductIds = await getRemoteProductIdsThatExist(supabase, productIdsForFk);
-      console.info("[Caixa Fácil] Venda: productIds no carrinho vs existentes no Supabase", {
-        carrinho: productIdsForFk,
-        existentesNoRemoto: [...validRemoteProductIds],
-      });
 
       const items = cart
         .filter((line) => line?.productName != null)
@@ -264,19 +266,12 @@ export function CaixaView() {
           line_total: line.lineTotal,
         }));
 
-      console.info("[Caixa Fácil] Venda: inserindo sale_items", { quantidade: items.length });
       const { error: itemsErr } = await supabase.from("sale_items").insert(items);
-      if (itemsErr) {
-        console.error("[Caixa Fácil] Erro real na venda (sale_items):", itemsErr.message, itemsErr);
-        throw itemsErr;
-      }
-      console.info("[Caixa Fácil] Venda: sale_items OK");
+      if (itemsErr) throw itemsErr;
 
-      console.info("[Caixa Fácil] Venda: atualização de estoque remoto");
       for (const [productId, dec] of neededByProduct) {
         await applyRemoteStockDecrement(productId, dec);
       }
-      console.info("[Caixa Fácil] Venda: atualização de estoque remoto concluída");
 
       const itensJson = cart
         .filter((line) => line?.productId)
@@ -288,23 +283,20 @@ export function CaixaView() {
           unitPrice: line.unitPrice,
           lineTotal: line.lineTotal,
         }));
-      console.info("[Caixa Fácil] Venda: gravando em vendas (tabela opcional)");
       await saveVenda({ total, troco: change, itens: itensJson });
-
-      console.info("[Caixa Fácil] Venda: syncStockAfterSale (localStorage)");
       syncStockAfterSale(userId, neededByProduct);
-
-      console.info("[Caixa Fácil] Venda: finalização OK");
       clearCart();
       await loadProducts();
     } catch (e) {
-      console.error("[Caixa Fácil] Erro real na venda:", e);
       const msg = vendingErrorMessage(e);
       setFinalizeError(msg.length > 0 ? msg : "Erro ao finalizar venda.");
     } finally {
       setFinalizing(false);
     }
   };
+
+  const productCardClass =
+    "flex min-h-24 flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm transition hover:border-emerald-300 hover:shadow-md active:bg-slate-50";
 
   if (loading) {
     return (
@@ -323,76 +315,127 @@ export function CaixaView() {
 
       <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
         <section className="flex-1 space-y-4">
-          <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-2 shadow-sm">
-            <div className="-mx-0.5 flex flex-nowrap items-center gap-2 overflow-x-auto pb-0.5 pt-0.5">
-              <button
-                type="button"
-                onClick={() => setCategoryFilter("all")}
-                className={`shrink-0 rounded-full border px-4 py-2 text-sm font-semibold transition ${
-                  categoryFilter === "all"
-                    ? "border-emerald-600 bg-emerald-600 text-white shadow-sm"
-                    : "border-slate-200 bg-white text-slate-800 hover:border-emerald-300"
-                }`}
-              >
-                Todos
-              </button>
-              {categories.map((c) => (
+          {step === "categories" ? (
+            <>
+              <p className="text-slate-600">Escolha uma categoria para ver os produtos.</p>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {categories.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => openCategory(c)}
+                    className={productCardClass}
+                  >
+                    <span className="text-4xl" aria-hidden>
+                      {emojiForCategory(c.name)}
+                    </span>
+                    <span className="text-sm font-semibold text-slate-800">{c.name}</span>
+                    <span className="text-xs text-slate-500">Abrir</span>
+                  </button>
+                ))}
                 <button
-                  key={c.id}
                   type="button"
-                  onClick={() => setCategoryFilter(c.id)}
-                  className={`max-w-[10rem] shrink-0 truncate rounded-full border px-4 py-2 text-sm font-semibold transition ${
-                    categoryFilter === c.id
-                      ? "border-emerald-600 bg-emerald-600 text-white shadow-sm"
-                      : "border-slate-200 bg-white text-slate-800 hover:border-emerald-300"
-                  }`}
-                  title={c.name}
+                  onClick={() => setNewCategoryOpen(true)}
+                  className={`${productCardClass} border-dashed border-emerald-400 bg-emerald-50/80 hover:bg-emerald-100`}
                 >
-                  {c.name}
-                </button>
-              ))}
-              <button
-                type="button"
-                onClick={() => setNewCategoryOpen(true)}
-                className="shrink-0 rounded-full border border-dashed border-emerald-400 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
-              >
-                + Nova categoria
-              </button>
-            </div>
-          </div>
-          <input
-            type="search"
-            placeholder="Buscar produto…"
-            className="w-full rounded-xl border border-slate-300 px-4 py-3 text-lg outline-none ring-emerald-500 focus:ring-2"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {filtered.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => setKeypadTarget({ product: p })}
-                className="flex min-h-24 flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm transition hover:border-emerald-300 hover:shadow-md active:bg-slate-50"
-              >
-                <span className="text-3xl" aria-hidden>
-                  {p.icon ?? "📦"}
-                </span>
-                <span className="text-sm font-semibold text-slate-800">{p.name}</span>
-                {p.type === "quantity" ? (
-                  <span className="text-xs text-slate-500">{formatBRL(p.price)} / un.</span>
-                ) : p.type === "typed_value" ? (
-                  <span className="text-xs text-slate-500">
-                    {p.price > 0 ? `Ref. ${formatBRL(p.price)}` : "Digite o valor"}
+                  <span className="text-4xl text-emerald-700" aria-hidden>
+                    ＋
                   </span>
-                ) : p.price > 0 ? (
-                  <span className="text-xs text-slate-500">Ref. {formatBRL(p.price)}</span>
-                ) : (
-                  <span className="text-xs text-slate-500">Valor manual</span>
-                )}
-              </button>
-            ))}
-          </div>
+                  <span className="text-sm font-semibold text-emerald-900">Novo card</span>
+                  <span className="text-xs text-emerald-800">Nova categoria</span>
+                </button>
+              </div>
+            </>
+          ) : activeCategory ? (
+            <>
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={goToCategories}
+                  className="min-h-12 rounded-xl border border-slate-300 bg-white px-4 font-semibold text-slate-800 shadow-sm hover:bg-slate-50"
+                >
+                  ← Voltar
+                </button>
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <span className="text-3xl" aria-hidden>
+                    {emojiForCategory(activeCategory.name)}
+                  </span>
+                  <h2 className="truncate text-xl font-bold text-slate-900">{activeCategory.name}</h2>
+                </div>
+              </div>
+              <input
+                type="search"
+                placeholder="Buscar nesta categoria…"
+                className="w-full rounded-xl border border-slate-300 px-4 py-3 text-lg outline-none ring-emerald-500 focus:ring-2"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              {productsInActiveCategory.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 px-6 py-12 text-center shadow-sm">
+                  <p className="text-lg font-medium text-slate-800">Nenhum produto aqui ainda</p>
+                  <p className="mt-2 text-sm text-slate-600">
+                    Adicione o primeiro item desta categoria para começar a vender.
+                  </p>
+                  <button
+                    type="button"
+                    className="mt-6 min-h-12 rounded-xl bg-emerald-600 px-6 font-semibold text-white hover:bg-emerald-700"
+                    onClick={() => setProductModalOpen(true)}
+                  >
+                    Criar produto
+                  </button>
+                </div>
+              ) : filteredProducts.length === 0 ? (
+                <div className="rounded-2xl border border-slate-200 bg-white px-6 py-10 text-center shadow-sm">
+                  <p className="font-medium text-slate-800">Nenhum resultado para a busca</p>
+                  <p className="mt-2 text-sm text-slate-600">Tente outro termo ou limpe o filtro.</p>
+                  <button
+                    type="button"
+                    className="mt-4 text-sm font-semibold text-emerald-700 underline"
+                    onClick={() => setSearch("")}
+                  >
+                    Limpar busca
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  {filteredProducts.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => setKeypadTarget({ product: p })}
+                      className={productCardClass}
+                    >
+                      <span className="text-3xl" aria-hidden>
+                        {p.icon ?? "📦"}
+                      </span>
+                      <span className="text-sm font-semibold text-slate-800">{p.name}</span>
+                      {p.type === "quantity" ? (
+                        <span className="text-xs text-slate-500">{formatBRL(p.price)} / un.</span>
+                      ) : p.type === "typed_value" ? (
+                        <span className="text-xs text-slate-500">
+                          {p.price > 0 ? `Ref. ${formatBRL(p.price)}` : "Digite o valor"}
+                        </span>
+                      ) : p.price > 0 ? (
+                        <span className="text-xs text-slate-500">Ref. {formatBRL(p.price)}</span>
+                      ) : (
+                        <span className="text-xs text-slate-500">Valor manual</span>
+                      )}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setProductModalOpen(true)}
+                    className={`${productCardClass} border-dashed border-emerald-400 bg-emerald-50/80 hover:bg-emerald-100`}
+                  >
+                    <span className="text-3xl text-emerald-700" aria-hidden>
+                      ＋
+                    </span>
+                    <span className="text-sm font-semibold text-emerald-900">Novo produto</span>
+                  </button>
+                </div>
+              )}
+            </>
+          ) : null}
         </section>
 
         <aside className="w-full shrink-0 space-y-4 lg:w-96">
@@ -508,9 +551,20 @@ export function CaixaView() {
           if (!result.ok) throw new Error(result.message);
           const next = await loadCategoriesForCaixa(userId);
           setCategories(next);
-          setCategoryFilter(result.category.id);
         }}
       />
+
+      {activeCategory ? (
+        <CaixaProductModal
+          open={productModalOpen}
+          categoryId={activeCategory.id}
+          categoryName={activeCategory.name}
+          onClose={() => setProductModalOpen(false)}
+          onSaved={async () => {
+            await loadProducts();
+          }}
+        />
+      ) : null}
 
       {keypadTarget ? (
         <NumericKeypad

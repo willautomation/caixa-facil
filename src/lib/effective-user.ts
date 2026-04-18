@@ -19,7 +19,9 @@ export function parseLocalTestUserId(): string | null {
 
 /**
  * Identificador usado em `user_id` nas tabelas.
- * - Modo teste: variável de ambiente ou `DEFAULT_LOCAL_TEST_USER_ID` (sem login / sem sessão).
+ * - Modo teste **com sessão Supabase**: usa `auth.getUser().id` para bater com RLS (`auth.uid() = user_id`).
+ * - Modo teste **sem sessão**: `NEXT_PUBLIC_LOCAL_USER_ID` ou `DEFAULT_LOCAL_TEST_USER_ID` (exige políticas
+ *   extras no banco para anon — ver migração `005_categories_rls_no_session.sql`).
  * - Modo normal: `auth.getUser()`.
  */
 export async function resolveEffectiveUserId(supabase: SupabaseClient): Promise<{
@@ -27,6 +29,12 @@ export async function resolveEffectiveUserId(supabase: SupabaseClient): Promise<
   errorMessage: string | null;
 }> {
   if (AUTH_DISABLED_FOR_TESTS) {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (user?.id) {
+      return { userId: user.id, errorMessage: null };
+    }
     const userId = parseLocalTestUserId() ?? DEFAULT_LOCAL_TEST_USER_ID;
     return { userId, errorMessage: null };
   }
