@@ -4,6 +4,8 @@ export interface Category {
   id: string;
   user_id: string;
   name: string;
+  /** Emoji/ícone salvo; null = usar fallback por nome na UI (exceto "Geral" = 📁). */
+  icon: string | null;
   created_at: string;
   updated_at: string;
 }

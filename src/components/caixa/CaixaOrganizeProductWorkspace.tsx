@@ -117,7 +117,7 @@ export type CaixaOrganizeProductWorkspaceProps = {
   onReorderProducts: (orderedIds: string[]) => void;
   onMoveProductToCategory: (productId: string, categoryId: string) => Promise<void>;
   onAddProduct: () => void;
-  emojiForCategory: (name: string) => string;
+  categoryDisplayIcon: (c: Category) => string;
   formatBRL: (n: number) => string;
   novoProductButtonClassName: string;
 };
@@ -128,7 +128,7 @@ export function CaixaOrganizeProductWorkspace({
   onReorderProducts,
   onMoveProductToCategory,
   onAddProduct,
-  emojiForCategory,
+  categoryDisplayIcon,
   formatBRL,
   novoProductButtonClassName,
 }: CaixaOrganizeProductWorkspaceProps) {
@@ -199,7 +199,7 @@ export function CaixaOrganizeProductWorkspace({
               <CategoryDropChip
                 key={c.id}
                 category={c}
-                emoji={emojiForCategory(c.name)}
+                emoji={categoryDisplayIcon(c)}
                 name={c.name}
                 placement="top"
               />
@@ -235,7 +235,7 @@ export function CaixaOrganizeProductWorkspace({
               <CategoryDropChip
                 key={`bot-${c.id}`}
                 category={c}
-                emoji={emojiForCategory(c.name)}
+                emoji={categoryDisplayIcon(c)}
                 name={c.name}
                 placement="bottom"
               />

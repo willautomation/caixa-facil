@@ -1,35 +1,48 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { isGeralCategoryName } from "@/lib/categories-repository";
+
+export type CategoryNamePayload = { name: string; icon: string | null };
 
 type Props = {
   open: boolean;
   title: string;
   initialName?: string;
+  initialIcon?: string;
   confirmLabel?: string;
   onClose: () => void;
-  onSubmit: (name: string) => Promise<void>;
+  onSubmit: (payload: CategoryNamePayload) => Promise<void>;
 };
 
 export function CategoryNameModal({
   open,
   title,
   initialName = "",
+  initialIcon = "",
   confirmLabel = "Salvar",
   onClose,
   onSubmit,
 }: Props) {
   const [name, setName] = useState(initialName);
+  const [icon, setIcon] = useState(initialIcon);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const geralIconLock = isGeralCategoryName(name);
 
   useEffect(() => {
     if (open) {
       setName(initialName);
+      setIcon(isGeralCategoryName(initialName) ? "📁" : initialIcon);
       setError(null);
       setBusy(false);
     }
-  }, [open, initialName]);
+  }, [open, initialName, initialIcon]);
+
+  useEffect(() => {
+    if (open && isGeralCategoryName(name)) setIcon("📁");
+  }, [open, name]);
 
   if (!open) return null;
 
@@ -42,7 +55,9 @@ export function CategoryNameModal({
     setError(null);
     setBusy(true);
     try {
-      await onSubmit(t);
+      const rawIcon = geralIconLock ? "📁" : icon.trim();
+      const iconPayload = rawIcon.length > 0 ? rawIcon.slice(0, 16) : null;
+      await onSubmit({ name: t, icon: iconPayload });
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Não foi possível salvar.");
@@ -71,6 +86,29 @@ export function CategoryNameModal({
           onChange={(e) => setName(e.target.value)}
           autoFocus
         />
+        <label className="mt-4 mb-1 block text-sm font-medium text-slate-700" htmlFor="cat-modal-icon">
+          Ícone (emoji)
+        </label>
+        {geralIconLock ? (
+          <div
+            id="cat-modal-icon"
+            className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-2xl"
+            aria-readonly
+          >
+            📁
+            <span className="text-sm text-slate-600">Fixo para &quot;Geral&quot;</span>
+          </div>
+        ) : (
+          <input
+            id="cat-modal-icon"
+            className="w-full rounded-xl border border-slate-300 px-4 py-3 text-2xl outline-none ring-emerald-500 focus:ring-2"
+            value={icon}
+            onChange={(e) => setIcon(e.target.value)}
+            placeholder="📦"
+            maxLength={16}
+            inputMode="text"
+          />
+        )}
         {error ? (
           <p className="mt-2 text-sm text-red-700" role="alert">
             {error}

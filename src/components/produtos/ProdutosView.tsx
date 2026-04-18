@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CategoryNameModal } from "@/components/categories/CategoryNameModal";
 import {
+  categoryDisplayIcon,
   DEFAULT_CATEGORY_NAME,
   deleteCategorySafe,
+  isGeralCategoryName,
   listCategories,
   renameCategory,
 } from "@/lib/categories-repository";
@@ -17,10 +19,6 @@ import {
 } from "@/lib/products-repository";
 import { formatBRL } from "@/lib/money";
 import type { Category, Product, ProductType } from "@/types/database";
-
-function isGeralCategory(c: Pick<Category, "name">): boolean {
-  return c.name.trim().toLowerCase() === DEFAULT_CATEGORY_NAME.toLowerCase();
-}
 
 export function ProdutosView() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -40,7 +38,7 @@ export function ProdutosView() {
   const [saving, setSaving] = useState(false);
 
   const geralCategoryId = useMemo(
-    () => categories.find((c) => isGeralCategory(c))?.id ?? "",
+    () => categories.find((c) => isGeralCategoryName(c.name))?.id ?? "",
     [categories]
   );
 
@@ -229,7 +227,12 @@ export function ProdutosView() {
                 key={c.id}
                 className="flex max-w-full flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
               >
-                <span className="font-medium text-slate-900">{c.name}</span>
+                <span className="font-medium text-slate-900">
+                  <span className="mr-1.5 inline-block text-lg" aria-hidden>
+                    {categoryDisplayIcon(c)}
+                  </span>
+                  {c.name}
+                </span>
                 <button
                   type="button"
                   className="rounded-lg bg-white px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-100"
@@ -319,7 +322,7 @@ export function ProdutosView() {
                   <option value="">Sem categoria</option>
                   {categories.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.name}
+                      {categoryDisplayIcon(c)} {c.name}
                     </option>
                   ))}
                 </select>
@@ -435,14 +438,15 @@ export function ProdutosView() {
         open={renamingCategory !== null}
         title="Renomear categoria"
         initialName={renamingCategory?.name ?? ""}
+        initialIcon={renamingCategory?.icon ?? ""}
         confirmLabel="Salvar"
         onClose={() => setRenamingCategory(null)}
-        onSubmit={async (newName) => {
+        onSubmit={async ({ name, icon }) => {
           if (!renamingCategory) return;
           const supabase = createClient();
           const { userId, errorMessage } = await resolveEffectiveUserId(supabase);
           if (!userId) throw new Error(errorMessage ?? "Não foi possível identificar o usuário.");
-          const result = await renameCategory(userId, renamingCategory.id, newName);
+          const result = await renameCategory(userId, renamingCategory.id, name, icon);
           if (!result.ok) throw new Error(result.message);
           await load();
         }}

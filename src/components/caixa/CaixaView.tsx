@@ -8,6 +8,7 @@ import { createClient } from "@/lib/supabase/client";
 import { resolveEffectiveUserId } from "@/lib/effective-user";
 import { CategoryNameModal } from "@/components/categories/CategoryNameModal";
 import {
+  categoryDisplayIcon,
   createCategory,
   DEFAULT_CATEGORY_NAME,
   loadCategoriesForCaixa,
@@ -31,26 +32,6 @@ type KeypadTarget = {
 } | null;
 
 type CaixaStep = "categories" | "products";
-
-const CATEGORY_EMOJI_HINTS: [string, string][] = [
-  ["beb", "🥤"],
-  ["refrig", "🥤"],
-  ["água", "💧"],
-  ["sal", "🥟"],
-  ["doc", "🍰"],
-  ["pão", "🥖"],
-  ["lim", "🧹"],
-  ["cig", "🚬"],
-  ["caf", "☕"],
-];
-
-function emojiForCategory(name: string): string {
-  const l = name.toLowerCase();
-  for (const [hint, emoji] of CATEGORY_EMOJI_HINTS) {
-    if (l.includes(hint)) return emoji;
-  }
-  return "📁";
-}
 
 function usesManualValueKeypad(p: Pick<Product, "type">): boolean {
   return p.type === "manual" || p.type === "typed_value";
@@ -463,7 +444,7 @@ export function CaixaView() {
                     className={productCardClass}
                   >
                     <span className="text-4xl" aria-hidden>
-                      {emojiForCategory(c.name)}
+                      {categoryDisplayIcon(c)}
                     </span>
                     <span className="text-sm font-semibold text-slate-800">{c.name}</span>
                     <span className="text-xs text-slate-500">Abrir</span>
@@ -494,7 +475,7 @@ export function CaixaView() {
                 </button>
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <span className="text-3xl" aria-hidden>
-                    {emojiForCategory(activeCategory.name)}
+                    {categoryDisplayIcon(activeCategory)}
                   </span>
                   <h2 className="truncate text-xl font-bold text-slate-900">{activeCategory.name}</h2>
                 </div>
@@ -545,7 +526,7 @@ export function CaixaView() {
                   onReorderProducts={reorderProductsInActiveCategory}
                   onMoveProductToCategory={moveProductToCategory}
                   onAddProduct={() => setProductModalOpen(true)}
-                  emojiForCategory={emojiForCategory}
+                  categoryDisplayIcon={categoryDisplayIcon}
                   formatBRL={formatBRL}
                   novoProductButtonClassName={`${productCardClass} border-dashed border-emerald-400 bg-emerald-50/80 hover:bg-emerald-100`}
                 />
@@ -699,11 +680,11 @@ export function CaixaView() {
         title="Nova categoria"
         confirmLabel="Criar"
         onClose={() => setNewCategoryOpen(false)}
-        onSubmit={async (name) => {
+        onSubmit={async ({ name, icon }) => {
           const supabase = createClient();
           const { userId, errorMessage } = await resolveEffectiveUserId(supabase);
           if (!userId) throw new Error(errorMessage ?? "Não foi possível identificar o usuário.");
-          const result = await createCategory(userId, name);
+          const result = await createCategory(userId, name, icon);
           if (!result.ok) throw new Error(result.message);
           const next = await loadCategoriesForCaixa(userId);
           setCategories(next);

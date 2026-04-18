@@ -4,11 +4,52 @@ import type { Category } from "@/types/database";
 
 export const DEFAULT_CATEGORY_NAME = "Geral";
 
+const FALLBACK_CATEGORY_EMOJI_HINTS: [string, string][] = [
+  ["beb", "🥤"],
+  ["refrig", "🥤"],
+  ["água", "💧"],
+  ["sal", "🥟"],
+  ["doc", "🍰"],
+  ["pão", "🥖"],
+  ["lim", "🧹"],
+  ["cig", "🚬"],
+  ["caf", "☕"],
+];
+
+export function isGeralCategoryName(name: string): boolean {
+  return name.trim().toLowerCase() === DEFAULT_CATEGORY_NAME.toLowerCase();
+}
+
+/** Emoji sugerido pelo nome quando não há `icon` salvo (exceto Geral, tratado em `categoryDisplayIcon`). */
+export function fallbackCategoryEmojiByName(name: string): string {
+  const l = name.toLowerCase();
+  for (const [hint, emoji] of FALLBACK_CATEGORY_EMOJI_HINTS) {
+    if (l.includes(hint)) return emoji;
+  }
+  return "📂";
+}
+
+/** Ícone mostrado no Caixa: Geral sempre 📁; depois `icon` salvo; senão fallback por nome. */
+export function categoryDisplayIcon(c: Pick<Category, "name" | "icon">): string {
+  if (isGeralCategoryName(c.name)) return "📁";
+  const t = (c.icon ?? "").trim();
+  if (t) return t.slice(0, 16);
+  return fallbackCategoryEmojiByName(c.name);
+}
+
+function parseCategoryIconField(r: Record<string, unknown>): string | null {
+  const v = r.icon;
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t ? t.slice(0, 16) : null;
+}
+
 function mapCategoryRow(r: Record<string, unknown>): Category {
   return {
     id: r.id as string,
     user_id: r.user_id as string,
     name: r.name as string,
+    icon: parseCategoryIconField(r),
     created_at: r.created_at as string,
     updated_at: r.updated_at as string,
   };
@@ -40,7 +81,7 @@ export async function ensureDefaultGeralCategoryId(
 
     const { data: inserted, error: insErr } = await supabase
       .from("categories")
-      .insert({ user_id: userId, name: DEFAULT_CATEGORY_NAME })
+      .insert({ user_id: userId, name: DEFAULT_CATEGORY_NAME, icon: "📁" })
       .select("id")
       .single();
     if (!insErr && inserted?.id) return inserted.id as string;
@@ -80,9 +121,9 @@ export function mergeCategoriesById(...lists: Category[][]): Category[] {
 export async function fetchCategoriesViaProductsJoin(userId: string): Promise<Category[]> {
   const supabase = createClient();
   const selectors = [
-    "category_id, categories ( id, name, user_id, created_at, updated_at )",
-    "category_id, category:categories ( id, name, user_id, created_at, updated_at )",
-    "category_id, categories!products_category_id_fkey ( id, name, user_id, created_at, updated_at )",
+    "category_id, categories ( id, name, user_id, icon, created_at, updated_at )",
+    "category_id, category:categories ( id, name, user_id, icon, created_at, updated_at )",
+    "category_id, categories!products_category_id_fkey ( id, name, user_id, icon, created_at, updated_at )",
   ];
   for (const sel of selectors) {
     const { data, error } = await supabase.from("products").select(sel).eq("user_id", userId);
@@ -136,15 +177,27 @@ export type CreateCategoryResult =
   | { ok: true; category: Category }
   | { ok: false; message: string };
 
-export async function createCategory(userId: string, rawName: string): Promise<CreateCategoryResult> {
+function resolvedCategoryIconForSave(name: string, rawIcon: string | null | undefined): string | null {
+  if (isGeralCategoryName(name)) return "📁";
+  if (rawIcon == null) return null;
+  const t = rawIcon.trim();
+  return t ? t.slice(0, 16) : null;
+}
+
+export async function createCategory(
+  userId: string,
+  rawName: string,
+  rawIcon?: string | null
+): Promise<CreateCategoryResult> {
   const name = rawName.trim();
   if (!name) {
     return { ok: false, message: "Informe um nome para a categoria." };
   }
+  const icon = resolvedCategoryIconForSave(name, rawIcon);
   const supabase = createClient();
   const { data, error } = await supabase
     .from("categories")
-    .insert({ user_id: userId, name })
+    .insert({ user_id: userId, name, icon })
     .select("*")
     .single();
   if (error) {
@@ -159,15 +212,21 @@ export async function createCategory(userId: string, rawName: string): Promise<C
 
 export type SimpleOk = { ok: true } | { ok: false; message: string };
 
-export async function renameCategory(userId: string, categoryId: string, rawName: string): Promise<SimpleOk> {
+export async function renameCategory(
+  userId: string,
+  categoryId: string,
+  rawName: string,
+  rawIcon?: string | null
+): Promise<SimpleOk> {
   const name = rawName.trim();
   if (!name) {
     return { ok: false, message: "O nome não pode ser vazio." };
   }
+  const icon = resolvedCategoryIconForSave(name, rawIcon);
   const supabase = createClient();
   const { error } = await supabase
     .from("categories")
-    .update({ name, updated_at: new Date().toISOString() })
+    .update({ name, icon, updated_at: new Date().toISOString() })
     .eq("id", categoryId)
     .eq("user_id", userId);
   if (error) {
