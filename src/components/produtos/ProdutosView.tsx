@@ -37,6 +37,10 @@ export function ProdutosView() {
   const [icon, setIcon] = useState("");
   const [productCategoryId, setProductCategoryId] = useState("");
   const [renamingCategory, setRenamingCategory] = useState<Category | null>(null);
+  const [deleteDialog, setDeleteDialog] = useState<{
+    category: Category;
+    moveToCategoryId: string;
+  } | null>(null);
   const [saving, setSaving] = useState(false);
 
   const geralCategoryId = useMemo(
@@ -97,18 +101,30 @@ export function ProdutosView() {
     setCreating(false);
   };
 
-  const removeCategory = async (c: Category) => {
-    if (isGeralCategory(c)) return;
-    if (!confirm(`Excluir a categoria "${c.name}"? Os produtos serão movidos para "${DEFAULT_CATEGORY_NAME}".`)) {
+  const productCountInCategory = (categoryId: string) =>
+    products.filter((p) => p.category_id === categoryId).length;
+
+  const beginDeleteCategory = (c: Category) => {
+    const n = productCountInCategory(c.id);
+    if (n === 0) {
+      if (!confirm(`Excluir a categoria "${c.name}"? Ela está vazia.`)) return;
+      void confirmDeleteCategory(c, null);
       return;
     }
+    const others = categories.filter((x) => x.id !== c.id);
+    const defaultMove = others[0]?.id ?? "__null__";
+    setDeleteDialog({ category: c, moveToCategoryId: defaultMove });
+  };
+
+  const confirmDeleteCategory = async (c: Category, moveToCategoryId: string | null) => {
     setError(null);
     try {
       const supabase = createClient();
       const { userId, errorMessage } = await resolveEffectiveUserId(supabase);
       if (!userId) throw new Error(errorMessage ?? "Não foi possível identificar o usuário.");
-      const result = await deleteCategorySafe(userId, c.id);
+      const result = await deleteCategorySafe(userId, c.id, moveToCategoryId);
       if (!result.ok) throw new Error(result.message);
+      setDeleteDialog(null);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erro ao excluir categoria");
@@ -192,7 +208,7 @@ export function ProdutosView() {
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Categorias</h2>
         <p className="mt-1 text-sm text-slate-600">
-          Organize o caixa. A categoria &quot;{DEFAULT_CATEGORY_NAME}&quot; não pode ser excluída.
+          Qualquer pasta pode ser excluída. Se houver produtos, escolha para onde enviá-los ou deixe sem categoria.
         </p>
         {categories.length === 0 ? (
           <p className="mt-3 text-sm text-slate-500">Nenhuma categoria carregada (aplique a migração do Supabase se necessário).</p>
@@ -204,26 +220,20 @@ export function ProdutosView() {
                 className="flex max-w-full flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
               >
                 <span className="font-medium text-slate-900">{c.name}</span>
-                {!isGeralCategory(c) ? (
-                  <>
-                    <button
-                      type="button"
-                      className="rounded-lg bg-white px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-100"
-                      onClick={() => setRenamingCategory(c)}
-                    >
-                      Renomear
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-lg bg-red-50 px-2 py-1 text-xs font-semibold text-red-700 ring-1 ring-red-100 hover:bg-red-100"
-                      onClick={() => void removeCategory(c)}
-                    >
-                      Excluir
-                    </button>
-                  </>
-                ) : (
-                  <span className="text-xs text-slate-500">padrão</span>
-                )}
+                <button
+                  type="button"
+                  className="rounded-lg bg-white px-2 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200 hover:bg-slate-100"
+                  onClick={() => setRenamingCategory(c)}
+                >
+                  Renomear
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg bg-red-50 px-2 py-1 text-xs font-semibold text-red-700 ring-1 ring-red-100 hover:bg-red-100"
+                  onClick={() => beginDeleteCategory(c)}
+                >
+                  Excluir
+                </button>
               </li>
             ))}
           </ul>
@@ -241,8 +251,9 @@ export function ProdutosView() {
               <div>
                 <p className="font-semibold text-slate-900">{p.name}</p>
                 <p className="text-xs text-slate-500">
-                  {categories.find((x) => x.id === (p.category_id ?? geralCategoryId))?.name ??
-                    DEFAULT_CATEGORY_NAME}
+                  {p.category_id
+                    ? (categories.find((x) => x.id === p.category_id)?.name ?? "Categoria removida")
+                    : "Sem categoria"}
                 </p>
                 <p className="text-sm text-slate-600">
                   {p.type === "manual"
@@ -295,6 +306,7 @@ export function ProdutosView() {
                   value={productCategoryId}
                   onChange={(e) => setProductCategoryId(e.target.value)}
                 >
+                  <option value="">Sem categoria</option>
                   {categories.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
@@ -403,6 +415,59 @@ export function ProdutosView() {
                 onClick={() => void save()}
               >
                 {saving ? "Salvando…" : "Salvar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {deleteDialog ? (
+        <div className="fixed inset-0 z-[55] flex items-end justify-center bg-black/40 p-4 sm:items-center">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <h2 className="text-lg font-bold text-slate-900">Excluir categoria</h2>
+            <p className="mt-2 text-sm text-slate-600">
+              A pasta &quot;{deleteDialog.category.name}&quot; tem{" "}
+              {productCountInCategory(deleteDialog.category.id)} produto(s). Para onde deseja movê-los antes de
+              apagar?
+            </p>
+            <label className="mt-4 block text-sm font-medium text-slate-700" htmlFor="destino-exclusao">
+              Destino dos produtos
+            </label>
+            <select
+              id="destino-exclusao"
+              className="mt-1 w-full rounded-xl border border-slate-300 px-4 py-3 text-lg outline-none ring-emerald-500 focus:ring-2"
+              value={deleteDialog.moveToCategoryId}
+              onChange={(e) =>
+                setDeleteDialog((d) => (d ? { ...d, moveToCategoryId: e.target.value } : null))
+              }
+            >
+              {categories
+                .filter((x) => x.id !== deleteDialog.category.id)
+                .map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              <option value="__null__">Sem categoria (category_id vazio)</option>
+            </select>
+            <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                className="min-h-11 rounded-xl border border-slate-300 px-4 font-semibold text-slate-800 hover:bg-slate-50"
+                onClick={() => setDeleteDialog(null)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="min-h-11 rounded-xl bg-red-600 px-4 font-semibold text-white hover:bg-red-700"
+                onClick={() => {
+                  const raw = deleteDialog.moveToCategoryId;
+                  const moveTo = raw === "__null__" ? null : raw;
+                  void confirmDeleteCategory(deleteDialog.category, moveTo);
+                }}
+              >
+                Excluir pasta
               </button>
             </div>
           </div>

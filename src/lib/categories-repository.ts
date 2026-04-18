@@ -1,7 +1,11 @@
 import { createClient } from "@/lib/supabase/client";
+import { mapProductRow } from "@/lib/products";
+import { upsertLocalProduct } from "@/lib/products-local-storage";
 import type { Category } from "@/types/database";
 
 export const DEFAULT_CATEGORY_NAME = "Geral";
+
+type Row = Parameters<typeof mapProductRow>[0];
 
 function mapCategoryRow(r: Record<string, unknown>): Category {
   return {
@@ -107,12 +111,11 @@ export async function fetchCategoriesViaProductsJoin(userId: string): Promise<Ca
 }
 
 /**
- * Lista categorias para o Caixa: garante "Geral", lê `categories` e une com categorias
- * descobertas pelo join em `products` (cobre listagem vazia intermitente ou só vínculo via produtos).
+ * Lista categorias para o Caixa: lê `categories` e une com categorias
+ * descobertas pelo join em `products` (não recria "Geral" automaticamente).
  */
 export async function loadCategoriesForCaixa(userId: string): Promise<Category[]> {
   const supabase = createClient();
-  await ensureDefaultGeralCategoryId(supabase, userId);
   const fromTable = await listCategories(userId);
   const fromJoin = await fetchCategoriesViaProductsJoin(userId);
   return mergeCategoriesById(fromTable, fromJoin);
@@ -120,7 +123,6 @@ export async function loadCategoriesForCaixa(userId: string): Promise<Category[]
 
 export async function listCategories(userId: string): Promise<Category[]> {
   const supabase = createClient();
-  await ensureDefaultGeralCategoryId(supabase, userId);
   const { data, error } = await supabase
     .from("categories")
     .select("*")
@@ -180,15 +182,54 @@ export async function renameCategory(userId: string, categoryId: string, rawName
   return { ok: true };
 }
 
-function isReservedGeral(name: string): boolean {
-  return name.trim().toLowerCase() === DEFAULT_CATEGORY_NAME.toLowerCase();
+/** Renumera sort_order e sincroniza cache local (categoria específica ou sem categoria). */
+async function recalculateProductSortOrdersInScope(
+  supabase: ReturnType<typeof createClient>,
+  userId: string,
+  scope: { categoryId: string } | { uncategorized: true }
+): Promise<void> {
+  let qb = supabase.from("products").select("*").eq("user_id", userId);
+  if ("categoryId" in scope) {
+    qb = qb.eq("category_id", scope.categoryId);
+  } else {
+    qb = qb.is("category_id", null);
+  }
+  const { data, error } = await qb.order("sort_order", { ascending: true }).order("name", { ascending: true });
+  if (error || !data?.length) return;
+  const now = new Date().toISOString();
+  await Promise.all(
+    data.map((row, index) =>
+      supabase
+        .from("products")
+        .update({ sort_order: index, updated_at: now })
+        .eq("id", (row as { id: string }).id)
+        .eq("user_id", userId)
+    )
+  );
+  let freshQb = supabase.from("products").select("*").eq("user_id", userId);
+  if ("categoryId" in scope) {
+    freshQb = freshQb.eq("category_id", scope.categoryId);
+  } else {
+    freshQb = freshQb.is("category_id", null);
+  }
+  const { data: fresh, error: againErr } = await freshQb
+    .order("sort_order", { ascending: true })
+    .order("name", { ascending: true });
+  if (againErr || !fresh) return;
+  for (const r of fresh) {
+    upsertLocalProduct(userId, mapProductRow(r as Row));
+  }
 }
 
 /**
- * Move produtos da categoria para "Geral", depois remove a categoria.
- * Não remove produtos. "Geral" não pode ser excluída.
+ * Exclui categoria. Produtos são movidos para `moveToCategoryId` ou `category_id = null` se `null`.
+ * Nenhuma categoria é bloqueada por nome (inclui "Geral").
  */
-export async function deleteCategorySafe(userId: string, categoryId: string): Promise<SimpleOk> {
+export async function deleteCategorySafe(
+  userId: string,
+  categoryId: string,
+  moveToCategoryId: string | null
+): Promise<SimpleOk> {
   const supabase = createClient();
   const { data: row, error: readErr } = await supabase
     .from("categories")
@@ -199,21 +240,37 @@ export async function deleteCategorySafe(userId: string, categoryId: string): Pr
   if (readErr || !row) {
     return { ok: false, message: "Categoria não encontrada." };
   }
-  if (isReservedGeral(row.name as string)) {
-    return { ok: false, message: `A categoria "${DEFAULT_CATEGORY_NAME}" não pode ser excluída.` };
+
+  if (moveToCategoryId !== null) {
+    if (moveToCategoryId === categoryId) {
+      return { ok: false, message: "Escolha outra categoria de destino ou “Sem categoria”." };
+    }
+    const { data: dest, error: destErr } = await supabase
+      .from("categories")
+      .select("id")
+      .eq("id", moveToCategoryId)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (destErr || !dest) {
+      return { ok: false, message: "Categoria de destino inválida." };
+    }
   }
-  const geralId = await ensureDefaultGeralCategoryId(supabase, userId);
-  if (!geralId) {
-    return { ok: false, message: "Não foi possível localizar a categoria Geral." };
-  }
+
   const { error: moveErr } = await supabase
     .from("products")
-    .update({ category_id: geralId, updated_at: new Date().toISOString() })
+    .update({ category_id: moveToCategoryId, updated_at: new Date().toISOString() })
     .eq("user_id", userId)
     .eq("category_id", categoryId);
   if (moveErr) {
-    return { ok: false, message: moveErr.message || "Falha ao mover produtos para Geral." };
+    return { ok: false, message: moveErr.message || "Falha ao mover produtos." };
   }
+
+  if (moveToCategoryId !== null) {
+    await recalculateProductSortOrdersInScope(supabase, userId, { categoryId: moveToCategoryId });
+  } else {
+    await recalculateProductSortOrdersInScope(supabase, userId, { uncategorized: true });
+  }
+
   const { error: delErr } = await supabase.from("categories").delete().eq("id", categoryId).eq("user_id", userId);
   if (delErr) {
     return { ok: false, message: delErr.message || "Falha ao excluir a categoria." };
@@ -221,13 +278,19 @@ export async function deleteCategorySafe(userId: string, categoryId: string): Pr
   return { ok: true };
 }
 
-/** Atualiza no Supabase produtos do usuário sem category_id para "Geral". */
+/** Só associa a "Geral" se essa categoria já existir (não cria "Geral" ao listar produtos). */
 export async function linkUncategorizedProductsToGeral(
   supabase: ReturnType<typeof createClient>,
   userId: string
 ): Promise<void> {
-  const geralId = await ensureDefaultGeralCategoryId(supabase, userId);
-  if (!geralId) return;
+  const { data: existing, error: selErr } = await supabase
+    .from("categories")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("name", DEFAULT_CATEGORY_NAME)
+    .maybeSingle();
+  if (selErr || !existing?.id) return;
+  const geralId = existing.id as string;
   const { error } = await supabase
     .from("products")
     .update({ category_id: geralId, updated_at: new Date().toISOString() })
