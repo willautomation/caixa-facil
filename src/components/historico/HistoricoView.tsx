@@ -13,15 +13,19 @@ function num(v: string | number): number {
   return typeof v === "string" ? Number(v) : v;
 }
 
-/** Mensagem legível para PostgREST / objetos com message (evita cair no texto genérico). */
-function closureErrorMessage(err: unknown): string {
+/** Mensagem legível para PostgREST / objetos com message (não são `instanceof Error`). */
+function formatSupabaseOrUnknown(err: unknown, fallback: string): string {
   if (err instanceof Error) return err.message;
   if (err && typeof err === "object") {
-    const o = err as { message?: string; details?: string; hint?: string };
-    const parts = [o.message, o.details, o.hint].filter(Boolean);
+    const o = err as { message?: string; details?: string; hint?: string; code?: string };
+    const parts = [o.message, o.details, o.hint, o.code ? `code=${o.code}` : ""].filter(Boolean);
     if (parts.length) return parts.join(" — ");
   }
-  return "Erro ao fechar caixa.";
+  return fallback;
+}
+
+function closureErrorMessage(err: unknown): string {
+  return formatSupabaseOrUnknown(err, "Erro ao fechar caixa.");
 }
 
 export function HistoricoView() {
@@ -49,6 +53,14 @@ export function HistoricoView() {
         return;
       }
       const { startIso, endIso } = localDayRangeIso(dateStr);
+      console.info("[Caixa Fácil][Histórico] Query sales (listagem do dia)", {
+        tabela: "sales",
+        filtros: {
+          user_id_prefix: `${userId.slice(0, 8)}…`,
+          created_at_gte: startIso,
+          created_at_lt: endIso,
+        },
+      });
       const { data, error: qErr } = await supabase
         .from("sales")
         .select("*")
@@ -56,7 +68,16 @@ export function HistoricoView() {
         .gte("created_at", startIso)
         .lt("created_at", endIso)
         .order("created_at", { ascending: false });
-      if (qErr) throw qErr;
+      if (qErr) {
+        console.error("[Caixa Fácil][Histórico] Erro Supabase em sales.select", {
+          message: qErr.message,
+          code: qErr.code,
+          details: qErr.details,
+          hint: qErr.hint,
+          raw: qErr,
+        });
+        throw qErr;
+      }
       setSales(
         (data ?? []).map((r) => ({
           id: r.id as string,
@@ -69,7 +90,8 @@ export function HistoricoView() {
         }))
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Erro ao carregar histórico");
+      console.error("[Caixa Fácil][Histórico] Falha no carregamento (sales ou resolve user)", e);
+      setError(formatSupabaseOrUnknown(e, "Erro ao carregar histórico"));
     } finally {
       setLoading(false);
     }
