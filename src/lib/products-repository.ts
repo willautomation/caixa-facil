@@ -201,6 +201,25 @@ export async function saveProductToRepository(
   upsertLocalProduct(userId, full);
 }
 
+/** Atualiza só `category_id` no Supabase e no cache local (ex.: arrastar produto entre categorias no Caixa). */
+export async function updateProductCategoryId(
+  userId: string,
+  product: Product,
+  newCategoryId: string
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const supabase = createClient();
+  const { error } = await supabase
+    .from("products")
+    .update({ category_id: newCategoryId, updated_at: new Date().toISOString() })
+    .eq("id", product.id)
+    .eq("user_id", userId);
+  if (error) {
+    return { ok: false, message: error.message || "Não foi possível mover o produto." };
+  }
+  upsertLocalProduct(userId, { ...product, category_id: newCategoryId });
+  return { ok: true };
+}
+
 export async function deleteProductFromRepository(userId: string, productId: string): Promise<void> {
   const supabase = createClient();
   try {
