@@ -13,6 +13,9 @@ function normalizeStoredProduct(raw: unknown, userId: string): Product | null {
   const stockVal = r.stock ?? r.stock_quantity;
   const stock = typeof stockVal === "number" ? stockVal : Number(stockVal ?? 0);
   const cat = r.category_id;
+  const so = r.sort_order;
+  const sortOrder =
+    typeof so === "number" && Number.isFinite(so) ? so : Number(so ?? 0) || 0;
   return {
     id: r.id,
     user_id: r.user_id as string,
@@ -23,6 +26,7 @@ function normalizeStoredProduct(raw: unknown, userId: string): Product | null {
     stock: Number.isFinite(stock) ? stock : 0,
     icon: typeof r.icon === "string" ? r.icon : null,
     category_id: typeof cat === "string" ? cat : null,
+    sort_order: sortOrder,
     created_at: typeof r.created_at === "string" ? r.created_at : undefined,
     updated_at: typeof r.updated_at === "string" ? r.updated_at : undefined,
   };

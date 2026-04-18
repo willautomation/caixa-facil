@@ -12,8 +12,12 @@ export function mapProductRow(row: {
   stock_quantity?: number | string;
   icon: string | null;
   category_id?: string | null;
+  sort_order?: number | string | null;
 }): Product {
   const rawStock = row.stock ?? row.stock_quantity;
+  const so = row.sort_order;
+  const sortOrder =
+    typeof so === "number" && Number.isFinite(so) ? so : Number(so ?? 0) || 0;
   return {
     id: row.id,
     user_id: row.user_id,
@@ -29,6 +33,7 @@ export function mapProductRow(row: {
     stock: typeof rawStock === "string" ? Number(rawStock) : Number(rawStock ?? 0),
     icon: row.icon,
     category_id: typeof row.category_id === "string" ? row.category_id : null,
+    sort_order: sortOrder,
   };
 }
 

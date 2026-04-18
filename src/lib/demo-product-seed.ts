@@ -30,7 +30,7 @@ export const DEMO_PRODUCT_DEFINITIONS: DemoSeedRow[] = [
 ];
 
 export function buildDefaultDemoProducts(userId: string): Product[] {
-  return DEMO_PRODUCT_DEFINITIONS.map((row) => ({
+  return DEMO_PRODUCT_DEFINITIONS.map((row, index) => ({
     id: crypto.randomUUID(),
     user_id: userId,
     name: row.name,
@@ -40,5 +40,6 @@ export function buildDefaultDemoProducts(userId: string): Product[] {
     stock: row.stock,
     icon: row.icon,
     category_id: null,
+    sort_order: index,
   }));
 }

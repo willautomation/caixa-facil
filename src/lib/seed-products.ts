@@ -23,7 +23,7 @@ export async function ensureSeedProducts(supabase: SupabaseClient, userId: strin
     if ((count ?? 0) > 0) return;
 
     const geralId = await ensureDefaultGeralCategoryId(supabase, userId);
-    const rows = DEMO_PRODUCT_DEFINITIONS.map((p) => ({
+    const rows = DEMO_PRODUCT_DEFINITIONS.map((p, index) => ({
       user_id: userId,
       name: p.name,
       type: p.type,
@@ -31,6 +31,7 @@ export async function ensureSeedProducts(supabase: SupabaseClient, userId: strin
       track_stock: p.track_stock,
       stock: p.stock,
       icon: p.icon,
+      sort_order: index,
       ...(geralId ? { category_id: geralId } : {}),
     }));
 

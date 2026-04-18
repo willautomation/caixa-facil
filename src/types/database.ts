@@ -19,6 +19,8 @@ export interface Product {
   icon: string | null;
   /** null ou ausente = tratado como categoria "Geral" na UI */
   category_id: string | null;
+  /** Ordem dentro da categoria (0 = primeiro). Persistido no Supabase. */
+  sort_order: number;
   created_at?: string;
   updated_at?: string;
 }

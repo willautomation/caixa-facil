@@ -16,7 +16,9 @@ import {
   applyRemoteStockDecrement,
   getRemoteProductIdsThatExist,
   loadProductsCatalog,
+  persistSortOrderForCategory,
   resolveProductStockForCart,
+  sortProductsForDisplay,
   syncStockAfterSale,
   updateProductCategoryId,
 } from "@/lib/products-repository";
@@ -64,31 +66,6 @@ function vendingErrorMessage(err: unknown): string {
   return String(err);
 }
 
-function mergeProductIds(existing: string[] | undefined, currentIds: string[]): string[] {
-  const ex = existing ?? [];
-  const curSet = new Set(currentIds);
-  const kept = ex.filter((id) => curSet.has(id));
-  const seen = new Set(kept);
-  const tail = currentIds.filter((id) => !seen.has(id));
-  return [...kept, ...tail];
-}
-
-function applyIdOrder(products: Product[], order: string[] | undefined): Product[] {
-  if (!order?.length) return products;
-  const map = new Map(products.map((p) => [p.id, p]));
-  const included = new Set(products.map((p) => p.id));
-  const ordered: Product[] = [];
-  for (const id of order) {
-    if (!included.has(id)) continue;
-    const pr = map.get(id);
-    if (pr) ordered.push(pr);
-  }
-  for (const p of products) {
-    if (!order.includes(p.id)) ordered.push(p);
-  }
-  return ordered;
-}
-
 export function CaixaView() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -111,7 +88,6 @@ export function CaixaView() {
   useEffect(() => {
     organizeModeRef.current = organizeMode;
   }, [organizeMode]);
-  const [productOrderByCategory, setProductOrderByCategory] = useState<Record<string, string[]>>({});
   const [dndNotice, setDndNotice] = useState<string | null>(null);
 
   const loadProducts = useCallback(async () => {
@@ -146,41 +122,20 @@ export function CaixaView() {
 
   const productsInActiveCategory = useMemo(() => {
     if (!activeCategory) return [];
-    return products.filter((p) => {
+    const filtered = products.filter((p) => {
       const effective = p.category_id ?? geralCategoryId;
       return effective === activeCategory.id;
     });
+    return sortProductsForDisplay(filtered);
   }, [products, activeCategory, geralCategoryId]);
-
-  useEffect(() => {
-    if (!organizeMode) return;
-    setProductOrderByCategory((prev) => {
-      const next: Record<string, string[]> = {};
-      for (const c of categories) {
-        const ids = products
-          .filter((p) => (p.category_id ?? geralCategoryId) === c.id)
-          .map((p) => p.id);
-        next[c.id] = mergeProductIds(prev[c.id], ids);
-      }
-      return next;
-    });
-  }, [organizeMode, products, categories, geralCategoryId]);
-
-  const productsInActiveCategoryOrdered = useMemo(() => {
-    if (!activeCategory) return [];
-    const base = productsInActiveCategory;
-    if (!organizeMode) return base;
-    const order = productOrderByCategory[activeCategory.id];
-    return applyIdOrder(base, order);
-  }, [productsInActiveCategory, organizeMode, productOrderByCategory, activeCategory?.id]);
 
   const searchFilteredProducts = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (organizeMode) return productsInActiveCategoryOrdered;
+    if (organizeMode) return productsInActiveCategory;
     const list = productsInActiveCategory;
     if (!q) return list;
     return list.filter((p) => p.name.toLowerCase().includes(q));
-  }, [organizeMode, productsInActiveCategoryOrdered, productsInActiveCategory, search]);
+  }, [organizeMode, productsInActiveCategory, search]);
 
   const total = useMemo(() => cart.reduce((acc, line) => acc + line.lineTotal, 0), [cart]);
   const received = parseMoneyInput(receivedRaw);
@@ -206,7 +161,6 @@ export function CaixaView() {
   const toggleOrganizeMode = () => {
     setOrganizeMode((v) => {
       if (v) {
-        setProductOrderByCategory({});
         setSearch("");
       } else {
         setKeypadTarget(null);
@@ -244,17 +198,44 @@ export function CaixaView() {
         setProducts(snapshot);
         setDndNotice(r.message);
         window.setTimeout(() => setDndNotice(null), 4000);
+        return;
       }
+      void loadProducts();
     },
-    [products, categories, effectiveCategoryId]
+    [products, categories, effectiveCategoryId, loadProducts]
   );
 
   const reorderProductsInActiveCategory = useCallback(
     (orderedIds: string[]) => {
       if (!activeCategory) return;
-      setProductOrderByCategory((prev) => ({ ...prev, [activeCategory.id]: orderedIds }));
+      const catId = activeCategory.id;
+      setProducts((list) =>
+        list.map((p) => {
+          const eff = p.category_id ?? geralCategoryId;
+          if (eff !== catId) return p;
+          const pos = orderedIds.indexOf(p.id);
+          if (pos === -1) return p;
+          return { ...p, sort_order: pos };
+        })
+      );
+      void (async () => {
+        const supabase = createClient();
+        const { userId, errorMessage } = await resolveEffectiveUserId(supabase);
+        if (!userId) {
+          setDndNotice(errorMessage ?? "Usuário inválido.");
+          window.setTimeout(() => setDndNotice(null), 4000);
+          void loadProducts();
+          return;
+        }
+        const r = await persistSortOrderForCategory(userId, catId, orderedIds);
+        if (!r.ok) {
+          setDndNotice(r.message);
+          window.setTimeout(() => setDndNotice(null), 4000);
+          void loadProducts();
+        }
+      })();
     },
-    [activeCategory]
+    [activeCategory, geralCategoryId, loadProducts]
   );
 
   const usedInCartForProduct = (productId: string) =>
@@ -448,8 +429,8 @@ export function CaixaView() {
           className="rounded-xl border border-violet-200/80 bg-violet-50/90 px-4 py-2.5 text-sm text-violet-950"
           role="status"
         >
-          Modo organização — arraste o card do produto. Solte sobre outro produto para reordenar (só nesta sessão) ou
-          sobre uma categoria para mover.
+          Modo organização — arraste o card do produto. Solte sobre outro produto para reordenar (ordem salva no
+          servidor) ou sobre uma categoria para mover.
         </p>
       ) : null}
 
