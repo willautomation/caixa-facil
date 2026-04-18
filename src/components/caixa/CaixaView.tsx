@@ -65,6 +65,31 @@ function vendingErrorMessage(err: unknown): string {
 
 const DND_MIME = "application/x-caixa-product-id";
 
+function mergeProductIds(existing: string[] | undefined, currentIds: string[]): string[] {
+  const ex = existing ?? [];
+  const curSet = new Set(currentIds);
+  const kept = ex.filter((id) => curSet.has(id));
+  const seen = new Set(kept);
+  const tail = currentIds.filter((id) => !seen.has(id));
+  return [...kept, ...tail];
+}
+
+function applyIdOrder(products: Product[], order: string[] | undefined): Product[] {
+  if (!order?.length) return products;
+  const map = new Map(products.map((p) => [p.id, p]));
+  const included = new Set(products.map((p) => p.id));
+  const ordered: Product[] = [];
+  for (const id of order) {
+    if (!included.has(id)) continue;
+    const pr = map.get(id);
+    if (pr) ordered.push(pr);
+  }
+  for (const p of products) {
+    if (!order.includes(p.id)) ordered.push(p);
+  }
+  return ordered;
+}
+
 export function CaixaView() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -82,8 +107,11 @@ export function CaixaView() {
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const [finalizing, setFinalizing] = useState(false);
 
+  const [organizeMode, setOrganizeMode] = useState(false);
+  const [productOrderByCategory, setProductOrderByCategory] = useState<Record<string, string[]>>({});
   const [draggingProduct, setDraggingProduct] = useState<Product | null>(null);
   const [dragOverCategoryId, setDragOverCategoryId] = useState<string | null>(null);
+  const [dragOverProductId, setDragOverProductId] = useState<string | null>(null);
   const [dndNotice, setDndNotice] = useState<string | null>(null);
 
   const loadProducts = useCallback(async () => {
@@ -124,11 +152,34 @@ export function CaixaView() {
     });
   }, [products, activeCategory, geralCategoryId]);
 
-  const filteredProducts = useMemo(() => {
+  useEffect(() => {
+    if (!organizeMode) return;
+    setProductOrderByCategory((prev) => {
+      const next: Record<string, string[]> = {};
+      for (const c of categories) {
+        const ids = products
+          .filter((p) => (p.category_id ?? geralCategoryId) === c.id)
+          .map((p) => p.id);
+        next[c.id] = mergeProductIds(prev[c.id], ids);
+      }
+      return next;
+    });
+  }, [organizeMode, products, categories, geralCategoryId]);
+
+  const productsInActiveCategoryOrdered = useMemo(() => {
+    if (!activeCategory) return [];
+    const base = productsInActiveCategory;
+    if (!organizeMode) return base;
+    const order = productOrderByCategory[activeCategory.id];
+    return applyIdOrder(base, order);
+  }, [productsInActiveCategory, organizeMode, productOrderByCategory, activeCategory?.id]);
+
+  const searchFilteredProducts = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return productsInActiveCategory;
-    return productsInActiveCategory.filter((p) => p.name.toLowerCase().includes(q));
-  }, [productsInActiveCategory, search]);
+    const list = organizeMode ? productsInActiveCategoryOrdered : productsInActiveCategory;
+    if (!q) return list;
+    return list.filter((p) => p.name.toLowerCase().includes(q));
+  }, [organizeMode, productsInActiveCategoryOrdered, productsInActiveCategory, search]);
 
   const total = useMemo(() => cart.reduce((acc, line) => acc + line.lineTotal, 0), [cart]);
   const received = parseMoneyInput(receivedRaw);
@@ -140,6 +191,7 @@ export function CaixaView() {
     setSearch("");
     setDraggingProduct(null);
     setDragOverCategoryId(null);
+    setDragOverProductId(null);
   };
 
   const openCategory = (c: Category) => {
@@ -153,14 +205,30 @@ export function CaixaView() {
     [geralCategoryId]
   );
 
+  const toggleOrganizeMode = () => {
+    setOrganizeMode((v) => {
+      if (v) {
+        setDraggingProduct(null);
+        setDragOverCategoryId(null);
+        setDragOverProductId(null);
+        setProductOrderByCategory({});
+      } else {
+        setKeypadTarget(null);
+      }
+      return !v;
+    });
+  };
+
   const handleDropOnCategory = useCallback(
     async (target: Category) => {
+      if (!organizeMode) return;
       const p = draggingProduct;
       if (!p) return;
       const fromId = effectiveCategoryId(p);
       if (fromId === target.id) {
         setDraggingProduct(null);
         setDragOverCategoryId(null);
+        setDragOverProductId(null);
         return;
       }
       const snapshot = [...products];
@@ -169,6 +237,7 @@ export function CaixaView() {
       );
       setDraggingProduct(null);
       setDragOverCategoryId(null);
+      setDragOverProductId(null);
       const supabase = createClient();
       const { userId, errorMessage } = await resolveEffectiveUserId(supabase);
       if (!userId) {
@@ -184,25 +253,63 @@ export function CaixaView() {
         window.setTimeout(() => setDndNotice(null), 4000);
       }
     },
-    [draggingProduct, products, effectiveCategoryId]
+    [organizeMode, draggingProduct, products, effectiveCategoryId]
   );
 
-  const categoryDropProps = (c: Category) => ({
-    onDragOver: (e: React.DragEvent) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
+  const categoryDropProps = useCallback(
+    (c: Category) => ({
+      onDragOver: (e: React.DragEvent) => {
+        if (!organizeMode || !draggingProduct) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+      },
+      onDragEnter: () => {
+        if (!organizeMode || !draggingProduct) return;
+        setDragOverCategoryId(c.id);
+      },
+      onDragLeave: (e: React.DragEvent) => {
+        if (!organizeMode || !draggingProduct) return;
+        const rel = e.relatedTarget as Node | null;
+        if (rel && e.currentTarget.contains(rel)) return;
+        setDragOverCategoryId((cur) => (cur === c.id ? null : cur));
+      },
+      onDrop: (e: React.DragEvent) => {
+        if (!organizeMode || !draggingProduct) return;
+        e.preventDefault();
+        void handleDropOnCategory(c);
+      },
+    }),
+    [organizeMode, draggingProduct, handleDropOnCategory]
+  );
+
+  const handleProductCardReorderDrop = useCallback(
+    (targetProductId: string) => {
+      if (!organizeMode || !activeCategory || !draggingProduct) return;
+      const dragId = draggingProduct.id;
+      if (dragId === targetProductId) return;
+      const targetP = products.find((x) => x.id === targetProductId);
+      if (!targetP) return;
+      if (effectiveCategoryId(draggingProduct) !== activeCategory.id) return;
+      if (effectiveCategoryId(targetP) !== activeCategory.id) return;
+
+      setProductOrderByCategory((prev) => {
+        const catId = activeCategory.id;
+        const baseIds =
+          prev[catId] && prev[catId].length > 0
+            ? [...prev[catId]]
+            : productsInActiveCategory.map((x) => x.id);
+        const arr = [...baseIds];
+        const di = arr.indexOf(dragId);
+        const ti = arr.indexOf(targetProductId);
+        if (di === -1 || ti === -1) return prev;
+        arr.splice(di, 1);
+        const newTi = arr.indexOf(targetProductId);
+        arr.splice(newTi, 0, dragId);
+        return { ...prev, [catId]: arr };
+      });
     },
-    onDragEnter: () => setDragOverCategoryId(c.id),
-    onDragLeave: (e: React.DragEvent) => {
-      const rel = e.relatedTarget as Node | null;
-      if (rel && e.currentTarget.contains(rel)) return;
-      setDragOverCategoryId((cur) => (cur === c.id ? null : cur));
-    },
-    onDrop: (e: React.DragEvent) => {
-      e.preventDefault();
-      void handleDropOnCategory(c);
-    },
-  });
+    [organizeMode, activeCategory, draggingProduct, products, effectiveCategoryId, productsInActiveCategory]
+  );
 
   const usedInCartForProduct = (productId: string) =>
     cart
@@ -362,13 +469,17 @@ export function CaixaView() {
   const productCardClass =
     "flex min-h-24 flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm transition hover:border-emerald-300 hover:shadow-md active:bg-slate-50";
 
+  const productCardClassOrganize =
+    "flex min-h-24 cursor-grab flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-violet-300 bg-violet-50/40 p-4 text-center shadow-sm transition hover:border-violet-500 hover:bg-violet-50 active:cursor-grabbing";
+
   const categoryDropCardClass = (catId: string, compact?: boolean) =>
     [
-      "flex shrink-0 cursor-grab flex-col items-center justify-center rounded-2xl border bg-white text-center shadow-sm transition",
+      "flex shrink-0 flex-col items-center justify-center rounded-2xl border bg-white text-center shadow-sm transition",
       compact ? "min-h-[5.5rem] w-[6.5rem] px-2 py-2" : "min-h-28 min-w-[7rem] flex-1 px-3 py-3 sm:min-w-[8rem]",
-      dragOverCategoryId === catId
-        ? "scale-[1.03] border-emerald-500 ring-2 ring-emerald-400 ring-offset-2"
+      organizeMode && draggingProduct && dragOverCategoryId === catId
+        ? "scale-[1.03] border-violet-600 ring-2 ring-violet-400 ring-offset-2"
         : "border-slate-200 hover:border-emerald-300",
+      organizeMode && draggingProduct ? "cursor-grab" : "",
     ].join(" ");
 
   const renderCategoryDropTargets = (compact: boolean) => (
@@ -393,6 +504,8 @@ export function CaixaView() {
     </div>
   );
 
+  const showDndChrome = organizeMode && draggingProduct;
+
   if (loading) {
     return (
       <div className="rounded-2xl bg-white p-8 text-center text-slate-600 shadow">Carregando…</div>
@@ -401,7 +514,32 @@ export function CaixaView() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-slate-900">Caixa</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold text-slate-900">Caixa</h1>
+        <button
+          type="button"
+          onClick={toggleOrganizeMode}
+          className={
+            organizeMode
+              ? "min-h-11 rounded-xl border-2 border-violet-600 bg-violet-600 px-4 font-semibold text-white shadow-md hover:bg-violet-700"
+              : "min-h-11 rounded-xl border border-slate-300 bg-white px-4 font-semibold text-slate-800 shadow-sm hover:bg-slate-50"
+          }
+        >
+          {organizeMode ? "Concluir organização" : "Organizar"}
+        </button>
+      </div>
+
+      {organizeMode ? (
+        <p
+          className="rounded-xl border-2 border-violet-400 bg-violet-50 px-4 py-3 text-sm font-medium text-violet-950"
+          role="status"
+        >
+          Modo organização: arraste um produto para outra categoria ou solte sobre outro produto para reordenar. A ordem
+          nesta sessão é só visual — para gravar no servidor seria preciso um campo como{" "}
+          <code className="rounded bg-violet-100 px-1">sort_order</code> na tabela de produtos.
+        </p>
+      ) : null}
+
       {loadError ? (
         <p className="rounded-xl bg-red-50 px-4 py-3 text-red-800" role="alert">
           {loadError}
@@ -414,11 +552,24 @@ export function CaixaView() {
       ) : null}
 
       <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
-        <section className="relative flex-1 space-y-4">
-          {step === "products" && draggingProduct ? (
-            <div className="sticky top-0 z-20 mb-2 rounded-xl border border-emerald-200 bg-emerald-50/95 px-3 py-3 shadow-md backdrop-blur-sm">
-              <p className="mb-2 text-center text-xs font-semibold text-emerald-900">
-                Solte o produto em uma categoria
+        <section
+          className={`relative flex-1 space-y-4 rounded-2xl transition ${
+            organizeMode ? "ring-2 ring-violet-400 ring-offset-2 ring-offset-slate-50" : ""
+          }`}
+        >
+          {showDndChrome && step === "products" ? (
+            <div className="sticky top-0 z-20 mb-2 rounded-xl border-2 border-violet-300 bg-violet-50/95 px-3 py-3 shadow-md backdrop-blur-sm">
+              <p className="mb-2 text-center text-xs font-semibold text-violet-900">
+                Solte em uma categoria para mover o produto
+              </p>
+              {renderCategoryDropTargets(true)}
+            </div>
+          ) : null}
+
+          {showDndChrome && step === "categories" ? (
+            <div className="sticky top-0 z-20 mb-2 rounded-xl border-2 border-violet-300 bg-violet-50/95 px-3 py-3 shadow-md backdrop-blur-sm">
+              <p className="mb-2 text-center text-xs font-semibold text-violet-900">
+                Solte em uma categoria para mover o produto
               </p>
               {renderCategoryDropTargets(true)}
             </div>
@@ -428,21 +579,47 @@ export function CaixaView() {
             <>
               <p className="text-slate-600">Escolha uma categoria para ver os produtos.</p>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {categories.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    {...categoryDropProps(c)}
-                    onClick={() => openCategory(c)}
-                    className={`${productCardClass} ${dragOverCategoryId === c.id ? "border-emerald-500 ring-2 ring-emerald-400" : ""}`}
-                  >
-                    <span className="text-4xl" aria-hidden>
-                      {emojiForCategory(c.name)}
-                    </span>
-                    <span className="text-sm font-semibold text-slate-800">{c.name}</span>
-                    <span className="text-xs text-slate-500">Abrir</span>
-                  </button>
-                ))}
+                {categories.map((c) =>
+                  organizeMode ? (
+                    <div
+                      key={c.id}
+                      {...categoryDropProps(c)}
+                      className={`flex min-h-28 flex-col items-center justify-between gap-2 rounded-2xl border-2 bg-white p-3 text-center shadow-sm transition ${
+                        showDndChrome && dragOverCategoryId === c.id
+                          ? "border-violet-600 ring-2 ring-violet-400"
+                          : "border-violet-200"
+                      }`}
+                    >
+                      <div className="flex flex-1 flex-col items-center justify-center gap-1">
+                        <span className="text-4xl" aria-hidden>
+                          {emojiForCategory(c.name)}
+                        </span>
+                        <span className="text-sm font-semibold text-slate-800">{c.name}</span>
+                        <span className="text-[10px] font-medium text-violet-700">Alvo de soltura</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => openCategory(c)}
+                        className="w-full min-h-10 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-800 hover:bg-slate-50"
+                      >
+                        Abrir
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => openCategory(c)}
+                      className={productCardClass}
+                    >
+                      <span className="text-4xl" aria-hidden>
+                        {emojiForCategory(c.name)}
+                      </span>
+                      <span className="text-sm font-semibold text-slate-800">{c.name}</span>
+                      <span className="text-xs text-slate-500">Abrir</span>
+                    </button>
+                  )
+                )}
                 <button
                   type="button"
                   onClick={() => setNewCategoryOpen(true)}
@@ -494,7 +671,7 @@ export function CaixaView() {
                     Criar produto
                   </button>
                 </div>
-              ) : filteredProducts.length === 0 ? (
+              ) : searchFilteredProducts.length === 0 ? (
                 <div className="rounded-2xl border border-slate-200 bg-white px-6 py-10 text-center shadow-sm">
                   <p className="font-medium text-slate-800">Nenhum resultado para a busca</p>
                   <p className="mt-2 text-sm text-slate-600">Tente outro termo ou limpe o filtro.</p>
@@ -508,50 +685,96 @@ export function CaixaView() {
                 </div>
               ) : (
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                  {filteredProducts.map((p) => (
-                    <div
-                      key={p.id}
-                      role="button"
-                      tabIndex={0}
-                      draggable
-                      onDragStart={(e) => {
-                        e.dataTransfer.setData(DND_MIME, p.id);
-                        e.dataTransfer.effectAllowed = "move";
-                        setDraggingProduct(p);
-                      }}
-                      onDragEnd={() => {
-                        setDraggingProduct(null);
-                        setDragOverCategoryId(null);
-                      }}
-                      onClick={() => setKeypadTarget({ product: p })}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
+                  {searchFilteredProducts.map((p) =>
+                    organizeMode ? (
+                      <div
+                        key={p.id}
+                        draggable
+                        aria-grabbed={draggingProduct?.id === p.id}
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData(DND_MIME, p.id);
+                          e.dataTransfer.effectAllowed = "move";
+                          setDraggingProduct(p);
+                        }}
+                        onDragEnd={() => {
+                          setDraggingProduct(null);
+                          setDragOverCategoryId(null);
+                          setDragOverProductId(null);
+                        }}
+                        onDragOver={(e) => {
+                          if (!draggingProduct || draggingProduct.id === p.id) return;
                           e.preventDefault();
-                          setKeypadTarget({ product: p });
-                        }
-                      }}
-                      className={`${productCardClass} cursor-pointer select-none outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
-                        draggingProduct?.id === p.id ? "opacity-40" : ""
-                      }`}
-                    >
-                      <span className="text-3xl" aria-hidden>
-                        {p.icon ?? "📦"}
-                      </span>
-                      <span className="text-sm font-semibold text-slate-800">{p.name}</span>
-                      {p.type === "quantity" ? (
-                        <span className="text-xs text-slate-500">{formatBRL(p.price)} / un.</span>
-                      ) : p.type === "typed_value" ? (
-                        <span className="text-xs text-slate-500">
-                          {p.price > 0 ? `Ref. ${formatBRL(p.price)}` : "Digite o valor"}
+                          e.dataTransfer.dropEffect = "move";
+                          setDragOverProductId(p.id);
+                        }}
+                        onDragLeave={(e) => {
+                          const rel = e.relatedTarget as Node | null;
+                          if (rel && e.currentTarget.contains(rel)) return;
+                          setDragOverProductId((cur) => (cur === p.id ? null : cur));
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleProductCardReorderDrop(p.id);
+                          setDragOverProductId(null);
+                        }}
+                        className={`${productCardClassOrganize} ${
+                          draggingProduct?.id === p.id ? "opacity-50 shadow-lg" : ""
+                        } ${
+                          dragOverProductId === p.id && draggingProduct && draggingProduct.id !== p.id
+                            ? "border-violet-600 bg-violet-100 ring-2 ring-violet-400"
+                            : ""
+                        }`}
+                      >
+                        <span className="text-3xl" aria-hidden>
+                          {p.icon ?? "📦"}
                         </span>
-                      ) : p.price > 0 ? (
-                        <span className="text-xs text-slate-500">Ref. {formatBRL(p.price)}</span>
-                      ) : (
-                        <span className="text-xs text-slate-500">Valor manual</span>
-                      )}
-                      <span className="text-[10px] font-medium text-slate-400">Arraste para mover</span>
-                    </div>
-                  ))}
+                        <span className="text-sm font-semibold text-slate-800">{p.name}</span>
+                        {p.type === "quantity" ? (
+                          <span className="text-xs text-slate-500">{formatBRL(p.price)} / un.</span>
+                        ) : p.type === "typed_value" ? (
+                          <span className="text-xs text-slate-500">
+                            {p.price > 0 ? `Ref. ${formatBRL(p.price)}` : "Digite o valor"}
+                          </span>
+                        ) : p.price > 0 ? (
+                          <span className="text-xs text-slate-500">Ref. {formatBRL(p.price)}</span>
+                        ) : (
+                          <span className="text-xs text-slate-500">Valor manual</span>
+                        )}
+                        <span className="text-[10px] font-semibold text-violet-800">Arraste · solte em categoria ou item</span>
+                      </div>
+                    ) : (
+                      <div
+                        key={p.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setKeypadTarget({ product: p })}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setKeypadTarget({ product: p });
+                          }
+                        }}
+                        className={`${productCardClass} cursor-pointer select-none outline-none focus-visible:ring-2 focus-visible:ring-emerald-500`}
+                      >
+                        <span className="text-3xl" aria-hidden>
+                          {p.icon ?? "📦"}
+                        </span>
+                        <span className="text-sm font-semibold text-slate-800">{p.name}</span>
+                        {p.type === "quantity" ? (
+                          <span className="text-xs text-slate-500">{formatBRL(p.price)} / un.</span>
+                        ) : p.type === "typed_value" ? (
+                          <span className="text-xs text-slate-500">
+                            {p.price > 0 ? `Ref. ${formatBRL(p.price)}` : "Digite o valor"}
+                          </span>
+                        ) : p.price > 0 ? (
+                          <span className="text-xs text-slate-500">Ref. {formatBRL(p.price)}</span>
+                        ) : (
+                          <span className="text-xs text-slate-500">Valor manual</span>
+                        )}
+                      </div>
+                    )
+                  )}
                   <button
                     type="button"
                     onClick={() => setProductModalOpen(true)}
@@ -668,13 +891,13 @@ export function CaixaView() {
         </aside>
       </div>
 
-      {draggingProduct ? (
+      {showDndChrome ? (
         <div
-          className="fixed inset-x-0 bottom-0 z-[41] border-t border-emerald-200 bg-white/95 px-3 py-3 shadow-[0_-8px_30px_rgba(0,0,0,0.12)] backdrop-blur-md lg:inset-auto lg:bottom-6 lg:right-6 lg:w-full lg:max-w-xl lg:rounded-2xl lg:border lg:shadow-lg"
+          className="fixed inset-x-0 bottom-0 z-[41] border-t-2 border-violet-300 bg-violet-50/95 px-3 py-3 shadow-[0_-8px_30px_rgba(0,0,0,0.12)] backdrop-blur-md lg:inset-auto lg:bottom-6 lg:right-6 lg:w-full lg:max-w-xl lg:rounded-2xl lg:border lg:shadow-lg"
           style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
         >
-          <p className="mb-2 text-center text-xs font-semibold text-emerald-900">
-            Solte aqui para mover de categoria
+          <p className="mb-2 text-center text-xs font-semibold text-violet-900">
+            Categorias — solte para mover o produto
           </p>
           {renderCategoryDropTargets(true)}
         </div>
@@ -708,7 +931,7 @@ export function CaixaView() {
         />
       ) : null}
 
-      {keypadTarget ? (
+      {keypadTarget && !organizeMode ? (
         <NumericKeypad
           key={keypadTarget.product.id}
           title={
