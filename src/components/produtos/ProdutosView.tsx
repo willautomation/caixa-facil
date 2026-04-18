@@ -8,6 +8,7 @@ import {
   deleteCategorySafe,
   isGeralCategoryName,
   listCategories,
+  mergeCategoriesById,
   renameCategory,
 } from "@/lib/categories-repository";
 import { createClient } from "@/lib/supabase/client";
@@ -448,6 +449,7 @@ export function ProdutosView() {
           if (!userId) throw new Error(errorMessage ?? "Não foi possível identificar o usuário.");
           const result = await renameCategory(userId, renamingCategory.id, name, icon);
           if (!result.ok) throw new Error(result.message);
+          setCategories((prev) => mergeCategoriesById(prev, [result.category]));
           await load();
         }}
       />

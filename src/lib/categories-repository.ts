@@ -212,30 +212,39 @@ export async function createCategory(
 
 export type SimpleOk = { ok: true } | { ok: false; message: string };
 
+export type RenameCategoryResult =
+  | { ok: true; category: Category }
+  | { ok: false; message: string };
+
 export async function renameCategory(
   userId: string,
   categoryId: string,
   rawName: string,
   rawIcon?: string | null
-): Promise<SimpleOk> {
+): Promise<RenameCategoryResult> {
   const name = rawName.trim();
   if (!name) {
     return { ok: false, message: "O nome não pode ser vazio." };
   }
   const icon = resolvedCategoryIconForSave(name, rawIcon);
   const supabase = createClient();
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("categories")
     .update({ name, icon, updated_at: new Date().toISOString() })
     .eq("id", categoryId)
-    .eq("user_id", userId);
+    .eq("user_id", userId)
+    .select("*")
+    .maybeSingle();
   if (error) {
     if (error.code === "23505") {
       return { ok: false, message: "Já existe uma categoria com esse nome." };
     }
     return { ok: false, message: error.message || "Não foi possível renomear." };
   }
-  return { ok: true };
+  if (!data) {
+    return { ok: false, message: "Nenhuma linha atualizada (RLS ou categoria inexistente)." };
+  }
+  return { ok: true, category: mapCategoryRow(data as Record<string, unknown>) };
 }
 
 const DELETE_CATEGORY_LOG = "[Caixa Fácil][delete-category]";
