@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { AUTH_DISABLED_FOR_TESTS } from "@/lib/auth-flags";
+import { clearAppPasswordAuthed, isAppPasswordGateEnabled } from "@/lib/app-password-gate";
 import { createClient } from "@/lib/supabase/client";
 
 const links = [
@@ -18,6 +19,10 @@ export function DashboardNav() {
   const router = useRouter();
 
   const logout = async () => {
+    if (isAppPasswordGateEnabled()) {
+      clearAppPasswordAuthed();
+      window.dispatchEvent(new Event("app-password-auth"));
+    }
     if (!AUTH_DISABLED_FOR_TESTS) {
       const supabase = createClient();
       await supabase.auth.signOut();
