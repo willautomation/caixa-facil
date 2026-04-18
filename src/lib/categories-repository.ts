@@ -1,11 +1,8 @@
 import { createClient } from "@/lib/supabase/client";
-import { mapProductRow } from "@/lib/products";
-import { upsertLocalProduct } from "@/lib/products-local-storage";
+import { removeLocalProduct } from "@/lib/products-local-storage";
 import type { Category } from "@/types/database";
 
 export const DEFAULT_CATEGORY_NAME = "Geral";
-
-type Row = Parameters<typeof mapProductRow>[0];
 
 function mapCategoryRow(r: Record<string, unknown>): Category {
   return {
@@ -182,58 +179,15 @@ export async function renameCategory(userId: string, categoryId: string, rawName
   return { ok: true };
 }
 
-/** Renumera sort_order e sincroniza cache local (categoria específica ou sem categoria). */
-async function recalculateProductSortOrdersInScope(
-  supabase: ReturnType<typeof createClient>,
-  userId: string,
-  scope: { categoryId: string } | { uncategorized: true }
-): Promise<void> {
-  let qb = supabase.from("products").select("*").eq("user_id", userId);
-  if ("categoryId" in scope) {
-    qb = qb.eq("category_id", scope.categoryId);
-  } else {
-    qb = qb.is("category_id", null);
-  }
-  const { data, error } = await qb.order("sort_order", { ascending: true }).order("name", { ascending: true });
-  if (error || !data?.length) return;
-  const now = new Date().toISOString();
-  await Promise.all(
-    data.map((row, index) =>
-      supabase
-        .from("products")
-        .update({ sort_order: index, updated_at: now })
-        .eq("id", (row as { id: string }).id)
-        .eq("user_id", userId)
-    )
-  );
-  let freshQb = supabase.from("products").select("*").eq("user_id", userId);
-  if ("categoryId" in scope) {
-    freshQb = freshQb.eq("category_id", scope.categoryId);
-  } else {
-    freshQb = freshQb.is("category_id", null);
-  }
-  const { data: fresh, error: againErr } = await freshQb
-    .order("sort_order", { ascending: true })
-    .order("name", { ascending: true });
-  if (againErr || !fresh) return;
-  for (const r of fresh) {
-    upsertLocalProduct(userId, mapProductRow(r as Row));
-  }
-}
-
 /**
- * Exclui categoria. Produtos são movidos para `moveToCategoryId` ou `category_id = null` se `null`.
+ * Exclui a categoria e todos os produtos que estão nela (Supabase + cache local).
  * Nenhuma categoria é bloqueada por nome (inclui "Geral").
  */
-export async function deleteCategorySafe(
-  userId: string,
-  categoryId: string,
-  moveToCategoryId: string | null
-): Promise<SimpleOk> {
+export async function deleteCategorySafe(userId: string, categoryId: string): Promise<SimpleOk> {
   const supabase = createClient();
   const { data: row, error: readErr } = await supabase
     .from("categories")
-    .select("id, name")
+    .select("id")
     .eq("id", categoryId)
     .eq("user_id", userId)
     .maybeSingle();
@@ -241,34 +195,29 @@ export async function deleteCategorySafe(
     return { ok: false, message: "Categoria não encontrada." };
   }
 
-  if (moveToCategoryId !== null) {
-    if (moveToCategoryId === categoryId) {
-      return { ok: false, message: "Escolha outra categoria de destino ou “Sem categoria”." };
-    }
-    const { data: dest, error: destErr } = await supabase
-      .from("categories")
-      .select("id")
-      .eq("id", moveToCategoryId)
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (destErr || !dest) {
-      return { ok: false, message: "Categoria de destino inválida." };
-    }
-  }
-
-  const { error: moveErr } = await supabase
+  const { data: prodRows, error: selProdErr } = await supabase
     .from("products")
-    .update({ category_id: moveToCategoryId, updated_at: new Date().toISOString() })
+    .select("id")
     .eq("user_id", userId)
     .eq("category_id", categoryId);
-  if (moveErr) {
-    return { ok: false, message: moveErr.message || "Falha ao mover produtos." };
+  if (selProdErr) {
+    return { ok: false, message: selProdErr.message || "Falha ao listar produtos da categoria." };
+  }
+  const productIds = (prodRows ?? []).map((r) => (r as { id: string }).id);
+
+  if (productIds.length > 0) {
+    const { error: delProdErr } = await supabase
+      .from("products")
+      .delete()
+      .eq("user_id", userId)
+      .eq("category_id", categoryId);
+    if (delProdErr) {
+      return { ok: false, message: delProdErr.message || "Falha ao excluir os produtos da categoria." };
+    }
   }
 
-  if (moveToCategoryId !== null) {
-    await recalculateProductSortOrdersInScope(supabase, userId, { categoryId: moveToCategoryId });
-  } else {
-    await recalculateProductSortOrdersInScope(supabase, userId, { uncategorized: true });
+  for (const id of productIds) {
+    removeLocalProduct(userId, id);
   }
 
   const { error: delErr } = await supabase.from("categories").delete().eq("id", categoryId).eq("user_id", userId);

@@ -37,10 +37,6 @@ export function ProdutosView() {
   const [icon, setIcon] = useState("");
   const [productCategoryId, setProductCategoryId] = useState("");
   const [renamingCategory, setRenamingCategory] = useState<Category | null>(null);
-  const [deleteDialog, setDeleteDialog] = useState<{
-    category: Category;
-    moveToCategoryId: string;
-  } | null>(null);
   const [saving, setSaving] = useState(false);
 
   const geralCategoryId = useMemo(
@@ -106,29 +102,24 @@ export function ProdutosView() {
 
   const beginDeleteCategory = (c: Category) => {
     const n = productCountInCategory(c.id);
-    if (n === 0) {
-      if (!confirm(`Excluir a categoria "${c.name}"? Ela está vazia.`)) return;
-      void confirmDeleteCategory(c, null);
-      return;
-    }
-    const others = categories.filter((x) => x.id !== c.id);
-    const defaultMove = others[0]?.id ?? "__null__";
-    setDeleteDialog({ category: c, moveToCategoryId: defaultMove });
-  };
-
-  const confirmDeleteCategory = async (c: Category, moveToCategoryId: string | null) => {
-    setError(null);
-    try {
-      const supabase = createClient();
-      const { userId, errorMessage } = await resolveEffectiveUserId(supabase);
-      if (!userId) throw new Error(errorMessage ?? "Não foi possível identificar o usuário.");
-      const result = await deleteCategorySafe(userId, c.id, moveToCategoryId);
-      if (!result.ok) throw new Error(result.message);
-      setDeleteDialog(null);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Erro ao excluir categoria");
-    }
+    const msg =
+      n === 0
+        ? `Excluir a categoria "${c.name}"? A pasta está vazia.`
+        : `Excluir a categoria "${c.name}"? Os ${n} produto(s) nesta pasta também serão excluídos permanentemente. Esta ação não pode ser desfeita.`;
+    if (!confirm(msg)) return;
+    void (async () => {
+      setError(null);
+      try {
+        const supabase = createClient();
+        const { userId, errorMessage } = await resolveEffectiveUserId(supabase);
+        if (!userId) throw new Error(errorMessage ?? "Não foi possível identificar o usuário.");
+        const result = await deleteCategorySafe(userId, c.id);
+        if (!result.ok) throw new Error(result.message);
+        await load();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Erro ao excluir categoria");
+      }
+    })();
   };
 
   const parsePrice = () => {
@@ -208,7 +199,7 @@ export function ProdutosView() {
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Categorias</h2>
         <p className="mt-1 text-sm text-slate-600">
-          Qualquer pasta pode ser excluída. Se houver produtos, escolha para onde enviá-los ou deixe sem categoria.
+          Ao excluir uma pasta, todos os produtos dentro dela são apagados junto. Confirme com cuidado.
         </p>
         {categories.length === 0 ? (
           <p className="mt-3 text-sm text-slate-500">Nenhuma categoria carregada (aplique a migração do Supabase se necessário).</p>
@@ -415,59 +406,6 @@ export function ProdutosView() {
                 onClick={() => void save()}
               >
                 {saving ? "Salvando…" : "Salvar"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {deleteDialog ? (
-        <div className="fixed inset-0 z-[55] flex items-end justify-center bg-black/40 p-4 sm:items-center">
-          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
-            <h2 className="text-lg font-bold text-slate-900">Excluir categoria</h2>
-            <p className="mt-2 text-sm text-slate-600">
-              A pasta &quot;{deleteDialog.category.name}&quot; tem{" "}
-              {productCountInCategory(deleteDialog.category.id)} produto(s). Para onde deseja movê-los antes de
-              apagar?
-            </p>
-            <label className="mt-4 block text-sm font-medium text-slate-700" htmlFor="destino-exclusao">
-              Destino dos produtos
-            </label>
-            <select
-              id="destino-exclusao"
-              className="mt-1 w-full rounded-xl border border-slate-300 px-4 py-3 text-lg outline-none ring-emerald-500 focus:ring-2"
-              value={deleteDialog.moveToCategoryId}
-              onChange={(e) =>
-                setDeleteDialog((d) => (d ? { ...d, moveToCategoryId: e.target.value } : null))
-              }
-            >
-              {categories
-                .filter((x) => x.id !== deleteDialog.category.id)
-                .map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              <option value="__null__">Sem categoria (category_id vazio)</option>
-            </select>
-            <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-end">
-              <button
-                type="button"
-                className="min-h-11 rounded-xl border border-slate-300 px-4 font-semibold text-slate-800 hover:bg-slate-50"
-                onClick={() => setDeleteDialog(null)}
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                className="min-h-11 rounded-xl bg-red-600 px-4 font-semibold text-white hover:bg-red-700"
-                onClick={() => {
-                  const raw = deleteDialog.moveToCategoryId;
-                  const moveTo = raw === "__null__" ? null : raw;
-                  void confirmDeleteCategory(deleteDialog.category, moveTo);
-                }}
-              >
-                Excluir pasta
               </button>
             </div>
           </div>
