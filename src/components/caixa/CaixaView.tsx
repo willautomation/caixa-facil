@@ -114,6 +114,8 @@ export function CaixaView() {
   }, [organizeMode]);
   const [productOrderByCategory, setProductOrderByCategory] = useState<Record<string, string[]>>({});
   const [draggingProduct, setDraggingProduct] = useState<Product | null>(null);
+  /** Sincronizado no dragstart antes de qualquer setState — evita o Chrome cancelar o DnD nativo. */
+  const draggingProductRef = useRef<Product | null>(null);
   const [dragOverCategoryId, setDragOverCategoryId] = useState<string | null>(null);
   const [dragOverProductId, setDragOverProductId] = useState<string | null>(null);
   const [dndNotice, setDndNotice] = useState<string | null>(null);
@@ -193,6 +195,7 @@ export function CaixaView() {
     setStep("categories");
     setActiveCategory(null);
     setSearch("");
+    draggingProductRef.current = null;
     setDraggingProduct(null);
     setDragOverCategoryId(null);
     setDragOverProductId(null);
@@ -212,6 +215,7 @@ export function CaixaView() {
   const toggleOrganizeMode = () => {
     setOrganizeMode((v) => {
       if (v) {
+        draggingProductRef.current = null;
         setDraggingProduct(null);
         setDragOverCategoryId(null);
         setDragOverProductId(null);
@@ -226,10 +230,11 @@ export function CaixaView() {
   const handleDropOnCategory = useCallback(
     async (target: Category) => {
       if (!organizeMode) return;
-      const p = draggingProduct;
+      const p = draggingProductRef.current;
       if (!p) return;
       const fromId = effectiveCategoryId(p);
       if (fromId === target.id) {
+        draggingProductRef.current = null;
         setDraggingProduct(null);
         setDragOverCategoryId(null);
         setDragOverProductId(null);
@@ -239,6 +244,7 @@ export function CaixaView() {
       setProducts((list) =>
         list.map((x) => (x.id === p.id ? { ...x, category_id: target.id } : x))
       );
+      draggingProductRef.current = null;
       setDraggingProduct(null);
       setDragOverCategoryId(null);
       setDragOverProductId(null);
@@ -257,43 +263,44 @@ export function CaixaView() {
         window.setTimeout(() => setDndNotice(null), 4000);
       }
     },
-    [organizeMode, draggingProduct, products, effectiveCategoryId]
+    [organizeMode, products, effectiveCategoryId]
   );
 
   const categoryDropProps = useCallback(
     (c: Category) => ({
       onDragOver: (e: React.DragEvent) => {
-        if (!organizeMode || !draggingProduct) return;
+        if (!organizeMode || !draggingProductRef.current) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
       },
       onDragEnter: () => {
-        if (!organizeMode || !draggingProduct) return;
+        if (!organizeMode || !draggingProductRef.current) return;
         setDragOverCategoryId(c.id);
       },
       onDragLeave: (e: React.DragEvent) => {
-        if (!organizeMode || !draggingProduct) return;
+        if (!organizeMode || !draggingProductRef.current) return;
         const rel = e.relatedTarget as Node | null;
         if (rel && e.currentTarget.contains(rel)) return;
         setDragOverCategoryId((cur) => (cur === c.id ? null : cur));
       },
       onDrop: (e: React.DragEvent) => {
-        if (!organizeMode || !draggingProduct) return;
+        if (!organizeMode || !draggingProductRef.current) return;
         e.preventDefault();
         void handleDropOnCategory(c);
       },
     }),
-    [organizeMode, draggingProduct, handleDropOnCategory]
+    [organizeMode, handleDropOnCategory]
   );
 
   const handleProductCardReorderDrop = useCallback(
     (targetProductId: string) => {
-      if (!organizeMode || !activeCategory || !draggingProduct) return;
-      const dragId = draggingProduct.id;
+      const drag = draggingProductRef.current;
+      if (!organizeMode || !activeCategory || !drag) return;
+      const dragId = drag.id;
       if (dragId === targetProductId) return;
       const targetP = products.find((x) => x.id === targetProductId);
       if (!targetP) return;
-      if (effectiveCategoryId(draggingProduct) !== activeCategory.id) return;
+      if (effectiveCategoryId(drag) !== activeCategory.id) return;
       if (effectiveCategoryId(targetP) !== activeCategory.id) return;
 
       setProductOrderByCategory((prev) => {
@@ -312,7 +319,7 @@ export function CaixaView() {
         return { ...prev, [catId]: arr };
       });
     },
-    [organizeMode, activeCategory, draggingProduct, products, effectiveCategoryId, productsInActiveCategory]
+    [organizeMode, activeCategory, products, effectiveCategoryId, productsInActiveCategory]
   );
 
   const usedInCartForProduct = (productId: string) =>
@@ -512,7 +519,7 @@ export function CaixaView() {
     </div>
   );
 
-  const showDndChrome = organizeMode && draggingProduct;
+  const showDndChrome = organizeMode && draggingProduct !== null;
 
   if (loading) {
     return (
@@ -705,7 +712,9 @@ export function CaixaView() {
                         className={`${productCardClassOrganize} ${
                           draggingProduct?.id === p.id ? "opacity-[0.45] shadow-md" : ""
                         } ${
-                          dragOverProductId === p.id && draggingProduct && draggingProduct.id !== p.id
+                          dragOverProductId === p.id &&
+                          draggingProductRef.current &&
+                          draggingProductRef.current.id !== p.id
                             ? "border-violet-600 bg-violet-100 ring-2 ring-violet-400 ring-offset-1"
                             : ""
                         }`}
@@ -714,7 +723,8 @@ export function CaixaView() {
                           e.stopPropagation();
                         }}
                         onDragOver={(e) => {
-                          if (!draggingProduct || draggingProduct.id === p.id) return;
+                          const drag = draggingProductRef.current;
+                          if (!drag || drag.id === p.id) return;
                           e.preventDefault();
                           e.dataTransfer.dropEffect = "move";
                           setDragOverProductId(p.id);
@@ -731,37 +741,37 @@ export function CaixaView() {
                           setDragOverProductId(null);
                         }}
                       >
-                        <span
+                        <div
                           data-caixa-drag-handle
-                          draggable
+                          draggable={true}
                           tabIndex={0}
                           aria-grabbed={draggingProduct?.id === p.id}
                           title="Arrastar produto"
                           className={productDragHandleClass}
                           onDragStart={(e) => {
-                            e.stopPropagation();
                             e.dataTransfer.setData(DND_MIME, p.id);
+                            e.dataTransfer.setData("text/plain", p.id);
                             e.dataTransfer.effectAllowed = "move";
-                            setDraggingProduct(p);
+                            draggingProductRef.current = p;
+                            queueMicrotask(() => setDraggingProduct(p));
                           }}
-                          onDragEnd={(e) => {
-                            e.stopPropagation();
+                          onDragEnd={() => {
+                            draggingProductRef.current = null;
                             setDraggingProduct(null);
                             setDragOverCategoryId(null);
                             setDragOverProductId(null);
                           }}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
+                          onClick={(ev) => {
+                            ev.preventDefault();
+                            ev.stopPropagation();
                           }}
-                          onPointerDown={(e) => e.stopPropagation()}
                         >
                           <span className="flex flex-col gap-0.5" aria-hidden>
                             <span className="h-0.5 w-4 rounded-full bg-current" />
                             <span className="h-0.5 w-4 rounded-full bg-current" />
                             <span className="h-0.5 w-4 rounded-full bg-current" />
                           </span>
-                        </span>
+                        </div>
                         <span className="text-3xl" aria-hidden>
                           {p.icon ?? "📦"}
                         </span>
