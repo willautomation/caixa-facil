@@ -61,8 +61,66 @@ export async function ensureDefaultGeralCategoryId(
   }
 }
 
+/** Une listas de categorias pelo `id` (última ocorrência vence). */
+export function mergeCategoriesById(...lists: Category[][]): Category[] {
+  const map = new Map<string, Category>();
+  for (const list of lists) {
+    for (const c of list) {
+      map.set(c.id, c);
+    }
+  }
+  return sortCategoriesForUi([...map.values()]);
+}
+
+/**
+ * Descobre categorias via FK em `products` (útil quando o SELECT direto em `categories` vem vazio
+ * por ordem de execução ou cache, mas os produtos já trazem o vínculo).
+ */
+export async function fetchCategoriesViaProductsJoin(userId: string): Promise<Category[]> {
+  const supabase = createClient();
+  const selectors = [
+    "category_id, categories ( id, name, user_id, created_at, updated_at )",
+    "category_id, category:categories ( id, name, user_id, created_at, updated_at )",
+    "category_id, categories!products_category_id_fkey ( id, name, user_id, created_at, updated_at )",
+  ];
+  for (const sel of selectors) {
+    const { data, error } = await supabase.from("products").select(sel).eq("user_id", userId);
+    if (error) {
+      console.warn("[Caixa Fácil] fetchCategoriesViaProductsJoin tentativa:", sel, error.message);
+      continue;
+    }
+    const map = new Map<string, Category>();
+    for (const raw of data ?? []) {
+      const row = raw as unknown as Record<string, unknown>;
+      const emb = row.categories ?? row.category;
+      if (emb == null) continue;
+      const c = Array.isArray(emb) ? (emb[0] as Record<string, unknown> | undefined) : (emb as Record<string, unknown>);
+      if (c && typeof c.id === "string" && typeof c.name === "string") {
+        map.set(c.id, mapCategoryRow(c));
+      }
+    }
+    if (map.size > 0) {
+      return sortCategoriesForUi([...map.values()]);
+    }
+  }
+  return [];
+}
+
+/**
+ * Lista categorias para o Caixa: garante "Geral", lê `categories` e une com categorias
+ * descobertas pelo join em `products` (cobre listagem vazia intermitente ou só vínculo via produtos).
+ */
+export async function loadCategoriesForCaixa(userId: string): Promise<Category[]> {
+  const supabase = createClient();
+  await ensureDefaultGeralCategoryId(supabase, userId);
+  const fromTable = await listCategories(userId);
+  const fromJoin = await fetchCategoriesViaProductsJoin(userId);
+  return mergeCategoriesById(fromTable, fromJoin);
+}
+
 export async function listCategories(userId: string): Promise<Category[]> {
   const supabase = createClient();
+  await ensureDefaultGeralCategoryId(supabase, userId);
   const { data, error } = await supabase
     .from("categories")
     .select("*")

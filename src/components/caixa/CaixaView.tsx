@@ -8,7 +8,7 @@ import { CategoryNameModal } from "@/components/categories/CategoryNameModal";
 import {
   createCategory,
   DEFAULT_CATEGORY_NAME,
-  listCategories,
+  loadCategoriesForCaixa,
 } from "@/lib/categories-repository";
 import {
   applyRemoteStockDecrement,
@@ -64,7 +64,8 @@ export function CaixaView() {
         setLoadError(errorMessage ?? "Não foi possível identificar o usuário.");
         return;
       }
-      const [list, cats] = await Promise.all([loadProductsCatalog(userId), listCategories(userId)]);
+      const list = await loadProductsCatalog(userId);
+      const cats = await loadCategoriesForCaixa(userId);
       setProducts(list);
       setCategories(cats);
     } catch (e) {
@@ -322,40 +323,42 @@ export function CaixaView() {
 
       <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
         <section className="flex-1 space-y-4">
-          <div className="-mx-1 flex flex-nowrap items-center gap-2 overflow-x-auto pb-1 pt-0.5">
-            <button
-              type="button"
-              onClick={() => setCategoryFilter("all")}
-              className={`shrink-0 rounded-full border px-4 py-2 text-sm font-semibold transition ${
-                categoryFilter === "all"
-                  ? "border-emerald-600 bg-emerald-600 text-white shadow-sm"
-                  : "border-slate-200 bg-white text-slate-800 hover:border-emerald-300"
-              }`}
-            >
-              Todos
-            </button>
-            {categories.map((c) => (
+          <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-2 shadow-sm">
+            <div className="-mx-0.5 flex flex-nowrap items-center gap-2 overflow-x-auto pb-0.5 pt-0.5">
               <button
-                key={c.id}
                 type="button"
-                onClick={() => setCategoryFilter(c.id)}
-                className={`max-w-[10rem] shrink-0 truncate rounded-full border px-4 py-2 text-sm font-semibold transition ${
-                  categoryFilter === c.id
+                onClick={() => setCategoryFilter("all")}
+                className={`shrink-0 rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                  categoryFilter === "all"
                     ? "border-emerald-600 bg-emerald-600 text-white shadow-sm"
                     : "border-slate-200 bg-white text-slate-800 hover:border-emerald-300"
                 }`}
-                title={c.name}
               >
-                {c.name}
+                Todos
               </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => setNewCategoryOpen(true)}
-              className="shrink-0 rounded-full border border-dashed border-emerald-400 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
-            >
-              + Nova categoria
-            </button>
+              {categories.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => setCategoryFilter(c.id)}
+                  className={`max-w-[10rem] shrink-0 truncate rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                    categoryFilter === c.id
+                      ? "border-emerald-600 bg-emerald-600 text-white shadow-sm"
+                      : "border-slate-200 bg-white text-slate-800 hover:border-emerald-300"
+                  }`}
+                  title={c.name}
+                >
+                  {c.name}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setNewCategoryOpen(true)}
+                className="shrink-0 rounded-full border border-dashed border-emerald-400 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
+              >
+                + Nova categoria
+              </button>
+            </div>
           </div>
           <input
             type="search"
@@ -503,7 +506,7 @@ export function CaixaView() {
           if (!userId) throw new Error(errorMessage ?? "Não foi possível identificar o usuário.");
           const result = await createCategory(userId, name);
           if (!result.ok) throw new Error(result.message);
-          const next = await listCategories(userId);
+          const next = await loadCategoriesForCaixa(userId);
           setCategories(next);
           setCategoryFilter(result.category.id);
         }}
