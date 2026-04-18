@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NumericKeypad } from "@/components/NumericKeypad";
 import { CaixaProductModal } from "@/components/caixa/CaixaProductModal";
 import { createClient } from "@/lib/supabase/client";
@@ -108,6 +108,10 @@ export function CaixaView() {
   const [finalizing, setFinalizing] = useState(false);
 
   const [organizeMode, setOrganizeMode] = useState(false);
+  const organizeModeRef = useRef(false);
+  useEffect(() => {
+    organizeModeRef.current = organizeMode;
+  }, [organizeMode]);
   const [productOrderByCategory, setProductOrderByCategory] = useState<Record<string, string[]>>({});
   const [draggingProduct, setDraggingProduct] = useState<Product | null>(null);
   const [dragOverCategoryId, setDragOverCategoryId] = useState<string | null>(null);
@@ -356,6 +360,7 @@ export function CaixaView() {
   };
 
   const onKeypadConfirm = (value: number) => {
+    if (organizeModeRef.current) return;
     if (!keypadTarget) return;
     addLine(keypadTarget.product, value);
     setKeypadTarget(null);
@@ -470,7 +475,10 @@ export function CaixaView() {
     "flex min-h-24 flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm transition hover:border-emerald-300 hover:shadow-md active:bg-slate-50";
 
   const productCardClassOrganize =
-    "flex min-h-24 cursor-grab flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-violet-300 bg-violet-50/40 p-4 text-center shadow-sm transition hover:border-violet-500 hover:bg-violet-50 active:cursor-grabbing";
+    "relative flex min-h-[6.5rem] flex-col items-center justify-center gap-1.5 rounded-2xl border-2 border-dashed border-violet-300/90 bg-violet-50/50 p-3 pt-9 text-center shadow-sm transition hover:border-violet-400 hover:bg-violet-50/80";
+
+  const productDragHandleClass =
+    "absolute left-2 top-2 z-[1] flex h-9 w-9 cursor-grab touch-none select-none items-center justify-center rounded-lg border border-violet-400/80 bg-white text-violet-700 shadow-sm transition hover:border-violet-500 hover:bg-violet-50 active:cursor-grabbing";
 
   const categoryDropCardClass = (catId: string, compact?: boolean) =>
     [
@@ -519,24 +527,27 @@ export function CaixaView() {
         <button
           type="button"
           onClick={toggleOrganizeMode}
+          aria-pressed={organizeMode}
           className={
             organizeMode
-              ? "min-h-11 rounded-xl border-2 border-violet-600 bg-violet-600 px-4 font-semibold text-white shadow-md hover:bg-violet-700"
-              : "min-h-11 rounded-xl border border-slate-300 bg-white px-4 font-semibold text-slate-800 shadow-sm hover:bg-slate-50"
+              ? "inline-flex min-h-10 items-center gap-2 rounded-full border border-violet-700 bg-violet-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-violet-700"
+              : "inline-flex min-h-10 items-center gap-2 rounded-full border border-slate-200/80 bg-slate-50/90 px-3.5 py-2 text-sm font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-white hover:text-slate-800"
           }
         >
+          <span className="text-base leading-none opacity-90" aria-hidden>
+            {organizeMode ? "✓" : "↕"}
+          </span>
           {organizeMode ? "Concluir organização" : "Organizar"}
         </button>
       </div>
 
       {organizeMode ? (
         <p
-          className="rounded-xl border-2 border-violet-400 bg-violet-50 px-4 py-3 text-sm font-medium text-violet-950"
+          className="rounded-xl border border-violet-200/80 bg-violet-50/90 px-4 py-2.5 text-sm text-violet-950"
           role="status"
         >
-          Modo organização: arraste um produto para outra categoria ou solte sobre outro produto para reordenar. A ordem
-          nesta sessão é só visual — para gravar no servidor seria preciso um campo como{" "}
-          <code className="rounded bg-violet-100 px-1">sort_order</code> na tabela de produtos.
+          Modo organização ativo — use a alça no canto do card para arrastar. Solte em outra categoria ou sobre outro
+          produto para reordenar (ordem visual nesta sessão).
         </p>
       ) : null}
 
@@ -689,17 +700,18 @@ export function CaixaView() {
                     organizeMode ? (
                       <div
                         key={p.id}
-                        draggable
-                        aria-grabbed={draggingProduct?.id === p.id}
-                        onDragStart={(e) => {
-                          e.dataTransfer.setData(DND_MIME, p.id);
-                          e.dataTransfer.effectAllowed = "move";
-                          setDraggingProduct(p);
-                        }}
-                        onDragEnd={() => {
-                          setDraggingProduct(null);
-                          setDragOverCategoryId(null);
-                          setDragOverProductId(null);
+                        role="group"
+                        aria-label={`${p.name} — modo organização`}
+                        className={`${productCardClassOrganize} ${
+                          draggingProduct?.id === p.id ? "opacity-[0.45] shadow-md" : ""
+                        } ${
+                          dragOverProductId === p.id && draggingProduct && draggingProduct.id !== p.id
+                            ? "border-violet-600 bg-violet-100 ring-2 ring-violet-400 ring-offset-1"
+                            : ""
+                        }`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
                         }}
                         onDragOver={(e) => {
                           if (!draggingProduct || draggingProduct.id === p.id) return;
@@ -718,14 +730,38 @@ export function CaixaView() {
                           handleProductCardReorderDrop(p.id);
                           setDragOverProductId(null);
                         }}
-                        className={`${productCardClassOrganize} ${
-                          draggingProduct?.id === p.id ? "opacity-50 shadow-lg" : ""
-                        } ${
-                          dragOverProductId === p.id && draggingProduct && draggingProduct.id !== p.id
-                            ? "border-violet-600 bg-violet-100 ring-2 ring-violet-400"
-                            : ""
-                        }`}
                       >
+                        <span
+                          data-caixa-drag-handle
+                          draggable
+                          tabIndex={0}
+                          aria-grabbed={draggingProduct?.id === p.id}
+                          title="Arrastar produto"
+                          className={productDragHandleClass}
+                          onDragStart={(e) => {
+                            e.stopPropagation();
+                            e.dataTransfer.setData(DND_MIME, p.id);
+                            e.dataTransfer.effectAllowed = "move";
+                            setDraggingProduct(p);
+                          }}
+                          onDragEnd={(e) => {
+                            e.stopPropagation();
+                            setDraggingProduct(null);
+                            setDragOverCategoryId(null);
+                            setDragOverProductId(null);
+                          }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                          }}
+                          onPointerDown={(e) => e.stopPropagation()}
+                        >
+                          <span className="flex flex-col gap-0.5" aria-hidden>
+                            <span className="h-0.5 w-4 rounded-full bg-current" />
+                            <span className="h-0.5 w-4 rounded-full bg-current" />
+                            <span className="h-0.5 w-4 rounded-full bg-current" />
+                          </span>
+                        </span>
                         <span className="text-3xl" aria-hidden>
                           {p.icon ?? "📦"}
                         </span>
@@ -741,21 +777,17 @@ export function CaixaView() {
                         ) : (
                           <span className="text-xs text-slate-500">Valor manual</span>
                         )}
-                        <span className="text-[10px] font-semibold text-violet-800">Arraste · solte em categoria ou item</span>
+                        <span className="text-[10px] font-medium text-violet-800/90">Alça para arrastar</span>
                       </div>
                     ) : (
-                      <div
+                      <button
                         key={p.id}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => setKeypadTarget({ product: p })}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            setKeypadTarget({ product: p });
-                          }
+                        type="button"
+                        onClick={() => {
+                          if (organizeModeRef.current) return;
+                          setKeypadTarget({ product: p });
                         }}
-                        className={`${productCardClass} cursor-pointer select-none outline-none focus-visible:ring-2 focus-visible:ring-emerald-500`}
+                        className={`${productCardClass} cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-emerald-500`}
                       >
                         <span className="text-3xl" aria-hidden>
                           {p.icon ?? "📦"}
@@ -772,7 +804,7 @@ export function CaixaView() {
                         ) : (
                           <span className="text-xs text-slate-500">Valor manual</span>
                         )}
-                      </div>
+                      </button>
                     )
                   )}
                   <button
