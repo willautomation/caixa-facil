@@ -4,6 +4,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { NumericKeypad } from "@/components/NumericKeypad";
 import { createClient } from "@/lib/supabase/client";
 import { resolveEffectiveUserId } from "@/lib/effective-user";
+import { CategoryNameModal } from "@/components/categories/CategoryNameModal";
+import {
+  createCategory,
+  DEFAULT_CATEGORY_NAME,
+  listCategories,
+} from "@/lib/categories-repository";
 import {
   applyRemoteStockDecrement,
   getRemoteProductIdsThatExist,
@@ -13,7 +19,7 @@ import {
 } from "@/lib/products-repository";
 import { saveVenda } from "@/lib/vendas";
 import { formatBRL, parseMoneyInput } from "@/lib/money";
-import type { CartLine, Product } from "@/types/database";
+import type { CartLine, Category, Product } from "@/types/database";
 
 type KeypadTarget = {
   product: Product;
@@ -36,6 +42,9 @@ function vendingErrorMessage(err: unknown): string {
 
 export function CaixaView() {
   const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [categoryFilter, setCategoryFilter] = useState<"all" | string>("all");
+  const [newCategoryOpen, setNewCategoryOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [cart, setCart] = useState<CartLine[]>([]);
   const [loading, setLoading] = useState(true);
@@ -55,8 +64,9 @@ export function CaixaView() {
         setLoadError(errorMessage ?? "Não foi possível identificar o usuário.");
         return;
       }
-      const list = await loadProductsCatalog(userId);
+      const [list, cats] = await Promise.all([loadProductsCatalog(userId), listCategories(userId)]);
       setProducts(list);
+      setCategories(cats);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "Erro ao carregar produtos");
     } finally {
@@ -68,11 +78,25 @@ export function CaixaView() {
     void loadProducts();
   }, [loadProducts]);
 
+  const geralCategoryId = useMemo(
+    () =>
+      categories.find((c) => c.name.trim().toLowerCase() === DEFAULT_CATEGORY_NAME.toLowerCase())?.id ?? null,
+    [categories]
+  );
+
+  const byCategory = useMemo(() => {
+    if (categoryFilter === "all") return products;
+    return products.filter((p) => {
+      const effective = p.category_id ?? geralCategoryId;
+      return effective === categoryFilter;
+    });
+  }, [products, categoryFilter, geralCategoryId]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return products;
-    return products.filter((p) => p.name.toLowerCase().includes(q));
-  }, [products, search]);
+    if (!q) return byCategory;
+    return byCategory.filter((p) => p.name.toLowerCase().includes(q));
+  }, [byCategory, search]);
 
   const total = useMemo(
     () => cart.reduce((acc, line) => acc + line.lineTotal, 0),
@@ -298,6 +322,41 @@ export function CaixaView() {
 
       <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
         <section className="flex-1 space-y-4">
+          <div className="-mx-1 flex flex-nowrap items-center gap-2 overflow-x-auto pb-1 pt-0.5">
+            <button
+              type="button"
+              onClick={() => setCategoryFilter("all")}
+              className={`shrink-0 rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                categoryFilter === "all"
+                  ? "border-emerald-600 bg-emerald-600 text-white shadow-sm"
+                  : "border-slate-200 bg-white text-slate-800 hover:border-emerald-300"
+              }`}
+            >
+              Todos
+            </button>
+            {categories.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => setCategoryFilter(c.id)}
+                className={`max-w-[10rem] shrink-0 truncate rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                  categoryFilter === c.id
+                    ? "border-emerald-600 bg-emerald-600 text-white shadow-sm"
+                    : "border-slate-200 bg-white text-slate-800 hover:border-emerald-300"
+                }`}
+                title={c.name}
+              >
+                {c.name}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => setNewCategoryOpen(true)}
+              className="shrink-0 rounded-full border border-dashed border-emerald-400 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
+            >
+              + Nova categoria
+            </button>
+          </div>
           <input
             type="search"
             placeholder="Buscar produto…"
@@ -432,6 +491,23 @@ export function CaixaView() {
           ) : null}
         </aside>
       </div>
+
+      <CategoryNameModal
+        open={newCategoryOpen}
+        title="Nova categoria"
+        confirmLabel="Criar"
+        onClose={() => setNewCategoryOpen(false)}
+        onSubmit={async (name) => {
+          const supabase = createClient();
+          const { userId, errorMessage } = await resolveEffectiveUserId(supabase);
+          if (!userId) throw new Error(errorMessage ?? "Não foi possível identificar o usuário.");
+          const result = await createCategory(userId, name);
+          if (!result.ok) throw new Error(result.message);
+          const next = await listCategories(userId);
+          setCategories(next);
+          setCategoryFilter(result.category.id);
+        }}
+      />
 
       {keypadTarget ? (
         <NumericKeypad

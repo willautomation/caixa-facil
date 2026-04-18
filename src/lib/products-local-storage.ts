@@ -1,6 +1,6 @@
 import type { Product, ProductType } from "@/types/database";
 
-const STORAGE_VERSION = 2;
+const STORAGE_VERSION = 3;
 
 /** Aceita JSON antigo com `stock_quantity`. */
 function normalizeStoredProduct(raw: unknown, userId: string): Product | null {
@@ -12,6 +12,7 @@ function normalizeStoredProduct(raw: unknown, userId: string): Product | null {
     r.type === "quantity" ? "quantity" : r.type === "typed_value" ? "typed_value" : "manual";
   const stockVal = r.stock ?? r.stock_quantity;
   const stock = typeof stockVal === "number" ? stockVal : Number(stockVal ?? 0);
+  const cat = r.category_id;
   return {
     id: r.id,
     user_id: r.user_id as string,
@@ -21,6 +22,7 @@ function normalizeStoredProduct(raw: unknown, userId: string): Product | null {
     track_stock: Boolean(r.track_stock),
     stock: Number.isFinite(stock) ? stock : 0,
     icon: typeof r.icon === "string" ? r.icon : null,
+    category_id: typeof cat === "string" ? cat : null,
     created_at: typeof r.created_at === "string" ? r.created_at : undefined,
     updated_at: typeof r.updated_at === "string" ? r.updated_at : undefined,
   };

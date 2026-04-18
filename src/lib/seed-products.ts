@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { ensureDefaultGeralCategoryId } from "@/lib/categories-repository";
 import { DEMO_PRODUCT_DEFINITIONS } from "@/lib/demo-product-seed";
 
 /** Compatível com código legado — mesmo catálogo da demo. */
@@ -21,6 +22,7 @@ export async function ensureSeedProducts(supabase: SupabaseClient, userId: strin
     }
     if ((count ?? 0) > 0) return;
 
+    const geralId = await ensureDefaultGeralCategoryId(supabase, userId);
     const rows = DEMO_PRODUCT_DEFINITIONS.map((p) => ({
       user_id: userId,
       name: p.name,
@@ -29,6 +31,7 @@ export async function ensureSeedProducts(supabase: SupabaseClient, userId: strin
       track_stock: p.track_stock,
       stock: p.stock,
       icon: p.icon,
+      ...(geralId ? { category_id: geralId } : {}),
     }));
 
     const { error } = await supabase.from("products").insert(rows);

@@ -11,6 +11,7 @@ export function mapProductRow(row: {
   /** legado / cache antigo */
   stock_quantity?: number | string;
   icon: string | null;
+  category_id?: string | null;
 }): Product {
   const rawStock = row.stock ?? row.stock_quantity;
   return {
@@ -27,6 +28,7 @@ export function mapProductRow(row: {
     track_stock: row.track_stock,
     stock: typeof rawStock === "string" ? Number(rawStock) : Number(rawStock ?? 0),
     icon: row.icon,
+    category_id: typeof row.category_id === "string" ? row.category_id : null,
   };
 }
 

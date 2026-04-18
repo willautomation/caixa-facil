@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/client";
+import { ensureDefaultGeralCategoryId, linkUncategorizedProductsToGeral } from "@/lib/categories-repository";
 import { buildDefaultDemoProducts, DEMO_PRODUCT_DEFINITIONS } from "@/lib/demo-product-seed";
 import { mapProductRow } from "@/lib/products";
 import {
@@ -23,6 +24,7 @@ async function pushLocalProductsToSupabase(
   userId: string,
   local: Product[]
 ): Promise<boolean> {
+  const geralId = await ensureDefaultGeralCategoryId(supabase, userId);
   const rows = local.map((p) => {
     const row: Record<string, unknown> = {
       id: p.id,
@@ -34,6 +36,7 @@ async function pushLocalProductsToSupabase(
       stock: p.stock,
       icon: p.icon,
     };
+    if (geralId) row.category_id = p.category_id ?? geralId;
     if (p.created_at) row.created_at = p.created_at;
     row.updated_at = p.updated_at ?? new Date().toISOString();
     return row;
@@ -71,6 +74,7 @@ async function fetchRemoteProducts(
  */
 export async function loadProductsCatalog(userId: string): Promise<Product[]> {
   const supabase = createClient();
+  await linkUncategorizedProductsToGeral(supabase, userId);
 
   let { list: remote, ok: remoteOk } = await fetchRemoteProducts(supabase, userId);
   const local = readLocalProducts(userId);
@@ -116,6 +120,7 @@ export async function loadProductsCatalog(userId: string): Promise<Product[]> {
 
   if (remoteOk) {
     try {
+      const geralId = await ensureDefaultGeralCategoryId(supabase, userId);
       const rows = DEMO_PRODUCT_DEFINITIONS.map((row) => ({
         user_id: userId,
         name: row.name,
@@ -124,6 +129,7 @@ export async function loadProductsCatalog(userId: string): Promise<Product[]> {
         track_stock: row.track_stock,
         stock: row.stock,
         icon: row.icon,
+        ...(geralId ? { category_id: geralId } : {}),
       }));
       await supabase.from("products").insert(rows);
     } catch (e) {
@@ -141,6 +147,7 @@ export type ProductSavePayload = {
   track_stock: boolean;
   stock: number;
   icon: string | null;
+  category_id: string | null;
 };
 
 /**
@@ -152,6 +159,8 @@ export async function saveProductToRepository(
   payload: ProductSavePayload
 ): Promise<void> {
   const supabase = createClient();
+  const geralId = await ensureDefaultGeralCategoryId(supabase, userId);
+  const resolvedCategoryId = payload.category_id ?? geralId ?? null;
   const id = editing?.id ?? crypto.randomUUID();
   const full: Product = {
     id,
@@ -162,9 +171,10 @@ export async function saveProductToRepository(
     track_stock: payload.track_stock,
     stock: payload.track_stock ? payload.stock : 0,
     icon: payload.icon,
+    category_id: resolvedCategoryId,
   };
 
-  const row = {
+  const row: Record<string, unknown> = {
     user_id: userId,
     name: full.name,
     type: full.type,
@@ -173,6 +183,7 @@ export async function saveProductToRepository(
     stock: full.stock,
     icon: full.icon,
   };
+  if (resolvedCategoryId) row.category_id = resolvedCategoryId;
 
   try {
     if (editing) {

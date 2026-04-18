@@ -1,5 +1,13 @@
 export type ProductType = "manual" | "quantity" | "typed_value";
 
+export interface Category {
+  id: string;
+  user_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Product {
   id: string;
   user_id: string;
@@ -9,6 +17,8 @@ export interface Product {
   track_stock: boolean;
   stock: number;
   icon: string | null;
+  /** null ou ausente = tratado como categoria "Geral" na UI */
+  category_id: string | null;
   created_at?: string;
   updated_at?: string;
 }

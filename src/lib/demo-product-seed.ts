@@ -39,5 +39,6 @@ export function buildDefaultDemoProducts(userId: string): Product[] {
     track_stock: row.track_stock,
     stock: row.stock,
     icon: row.icon,
+    category_id: null,
   }));
 }
