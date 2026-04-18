@@ -44,7 +44,7 @@ export function ProdutosView() {
     [categories]
   );
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<boolean> => {
     setError(null);
     try {
       const supabase = createClient();
@@ -52,13 +52,17 @@ export function ProdutosView() {
       if (!userId) {
         setError(errorMessage ?? "Não foi possível identificar o usuário.");
         setProducts([]);
-        return;
+        return false;
       }
       const [list, cats] = await Promise.all([loadProductsCatalog(userId), listCategories(userId)]);
       setProducts(list);
       setCategories(cats);
+      return true;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Erro ao carregar");
+      const msg = e instanceof Error ? e.message : "Erro ao carregar";
+      setError(msg);
+      console.error("[Caixa Fácil][delete-category-ui] load() erro", e);
+      return false;
     } finally {
       setLoading(false);
     }
@@ -101,22 +105,37 @@ export function ProdutosView() {
     products.filter((p) => p.category_id === categoryId).length;
 
   const beginDeleteCategory = (c: Category) => {
+    const log = (...parts: unknown[]) => console.log("[Caixa Fácil][delete-category-ui]", ...parts);
+    const logErr = (...parts: unknown[]) => console.error("[Caixa Fácil][delete-category-ui]", ...parts);
+    log("clique Excluir", { categoryId: c.id, name: c.name });
     const n = productCountInCategory(c.id);
     const msg =
       n === 0
         ? `Excluir a categoria "${c.name}"? A pasta está vazia.`
         : `Excluir a categoria "${c.name}"? Os ${n} produto(s) nesta pasta também serão excluídos permanentemente. Esta ação não pode ser desfeita.`;
-    if (!confirm(msg)) return;
+    const ok = confirm(msg);
+    if (!ok) {
+      log("confirm cancelado");
+      return;
+    }
+    log("confirm aceito");
     void (async () => {
       setError(null);
       try {
+        log("início fluxo após confirm");
         const supabase = createClient();
         const { userId, errorMessage } = await resolveEffectiveUserId(supabase);
+        log("resolveEffectiveUserId", { userId, errorMessage });
         if (!userId) throw new Error(errorMessage ?? "Não foi possível identificar o usuário.");
+        log("chamando deleteCategorySafe", { userId, categoryId: c.id });
         const result = await deleteCategorySafe(userId, c.id);
         if (!result.ok) throw new Error(result.message);
-        await load();
+        log("deleteCategorySafe ok");
+        const reloaded = await load();
+        if (!reloaded) logErr("reload erro ou usuário inválido após exclusão");
+        else log("reload ok");
       } catch (e) {
+        logErr("fluxo exclusão falhou", e);
         setError(e instanceof Error ? e.message : "Erro ao excluir categoria");
       }
     })();

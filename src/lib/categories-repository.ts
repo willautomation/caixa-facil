@@ -1,5 +1,5 @@
 import { createClient } from "@/lib/supabase/client";
-import { removeLocalProduct } from "@/lib/products-local-storage";
+import { readLocalProducts, removeLocalProduct } from "@/lib/products-local-storage";
 import type { Category } from "@/types/database";
 
 export const DEFAULT_CATEGORY_NAME = "Geral";
@@ -179,21 +179,36 @@ export async function renameCategory(userId: string, categoryId: string, rawName
   return { ok: true };
 }
 
+const DELETE_CATEGORY_LOG = "[Caixa Fácil][delete-category]";
+
 /**
  * Exclui a categoria e todos os produtos que estão nela (Supabase + cache local).
  * Nenhuma categoria é bloqueada por nome (inclui "Geral").
  */
 export async function deleteCategorySafe(userId: string, categoryId: string): Promise<SimpleOk> {
   const supabase = createClient();
+  const log = (...parts: unknown[]) => console.log(DELETE_CATEGORY_LOG, ...parts);
+  const logErr = (...parts: unknown[]) => console.error(DELETE_CATEGORY_LOG, ...parts);
+
+  log("início exclusão", { userId, categoryId });
+
   const { data: row, error: readErr } = await supabase
     .from("categories")
     .select("id")
     .eq("id", categoryId)
     .eq("user_id", userId)
     .maybeSingle();
-  if (readErr || !row) {
+  if (readErr) {
+    logErr("ler categoria: erro Supabase", readErr);
+    return { ok: false, message: readErr.message || "Falha ao ler a categoria." };
+  }
+  if (!row) {
+    logErr("ler categoria: nenhuma linha (RLS ou id/user_id incorreto)", { userId, categoryId });
     return { ok: false, message: "Categoria não encontrada." };
   }
+
+  const localInCategory = readLocalProducts(userId).filter((p) => p.category_id === categoryId);
+  log("produtos no localStorage nesta categoria", localInCategory.length);
 
   const { data: prodRows, error: selProdErr } = await supabase
     .from("products")
@@ -201,29 +216,49 @@ export async function deleteCategorySafe(userId: string, categoryId: string): Pr
     .eq("user_id", userId)
     .eq("category_id", categoryId);
   if (selProdErr) {
+    logErr("select products: erro", selProdErr);
     return { ok: false, message: selProdErr.message || "Falha ao listar produtos da categoria." };
   }
-  const productIds = (prodRows ?? []).map((r) => (r as { id: string }).id);
+  const remoteCount = (prodRows ?? []).length;
+  log("select products no Supabase", { count: remoteCount });
 
-  if (productIds.length > 0) {
-    const { error: delProdErr } = await supabase
-      .from("products")
-      .delete()
-      .eq("user_id", userId)
-      .eq("category_id", categoryId);
-    if (delProdErr) {
-      return { ok: false, message: delProdErr.message || "Falha ao excluir os produtos da categoria." };
-    }
+  const { data: deletedProdRows, error: delProdErr } = await supabase
+    .from("products")
+    .delete()
+    .eq("user_id", userId)
+    .eq("category_id", categoryId)
+    .select("id");
+  if (delProdErr) {
+    logErr("delete products: erro (ex.: RLS sem política para anon)", delProdErr);
+    return { ok: false, message: delProdErr.message || "Falha ao excluir os produtos da categoria." };
   }
+  log("delete products: ok", { linhasRemotas: deletedProdRows?.length ?? 0 });
 
-  for (const id of productIds) {
-    removeLocalProduct(userId, id);
+  const localsToStrip = readLocalProducts(userId).filter((p) => p.category_id === categoryId);
+  for (const p of localsToStrip) {
+    removeLocalProduct(userId, p.id);
   }
+  log("localStorage: removidos produtos da pasta", localsToStrip.length);
 
-  const { error: delErr } = await supabase.from("categories").delete().eq("id", categoryId).eq("user_id", userId);
+  const { data: deletedCatRows, error: delErr } = await supabase
+    .from("categories")
+    .delete()
+    .eq("id", categoryId)
+    .eq("user_id", userId)
+    .select("id");
   if (delErr) {
+    logErr("delete category: erro", delErr);
     return { ok: false, message: delErr.message || "Falha ao excluir a categoria." };
   }
+  if (!deletedCatRows?.length) {
+    logErr("delete category: 0 linhas afetadas (RLS ou registro inexistente)", { userId, categoryId });
+    return {
+      ok: false,
+      message:
+        "A categoria não foi removida no servidor (0 linhas). Verifique políticas RLS em `categories` para o seu usuário.",
+    };
+  }
+  log("delete category: ok", { id: deletedCatRows[0]?.id });
   return { ok: true };
 }
 
