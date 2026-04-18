@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NumericKeypad } from "@/components/NumericKeypad";
 import { CaixaProductModal } from "@/components/caixa/CaixaProductModal";
+import { CaixaOrganizeProductWorkspace } from "@/components/caixa/CaixaOrganizeProductWorkspace";
 import { createClient } from "@/lib/supabase/client";
 import { resolveEffectiveUserId } from "@/lib/effective-user";
 import { CategoryNameModal } from "@/components/categories/CategoryNameModal";
@@ -63,8 +64,6 @@ function vendingErrorMessage(err: unknown): string {
   return String(err);
 }
 
-const DND_MIME = "application/x-caixa-product-id";
-
 function mergeProductIds(existing: string[] | undefined, currentIds: string[]): string[] {
   const ex = existing ?? [];
   const curSet = new Set(currentIds);
@@ -113,11 +112,6 @@ export function CaixaView() {
     organizeModeRef.current = organizeMode;
   }, [organizeMode]);
   const [productOrderByCategory, setProductOrderByCategory] = useState<Record<string, string[]>>({});
-  const [draggingProduct, setDraggingProduct] = useState<Product | null>(null);
-  /** Sincronizado no dragstart antes de qualquer setState — evita o Chrome cancelar o DnD nativo. */
-  const draggingProductRef = useRef<Product | null>(null);
-  const [dragOverCategoryId, setDragOverCategoryId] = useState<string | null>(null);
-  const [dragOverProductId, setDragOverProductId] = useState<string | null>(null);
   const [dndNotice, setDndNotice] = useState<string | null>(null);
 
   const loadProducts = useCallback(async () => {
@@ -182,7 +176,8 @@ export function CaixaView() {
 
   const searchFilteredProducts = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const list = organizeMode ? productsInActiveCategoryOrdered : productsInActiveCategory;
+    if (organizeMode) return productsInActiveCategoryOrdered;
+    const list = productsInActiveCategory;
     if (!q) return list;
     return list.filter((p) => p.name.toLowerCase().includes(q));
   }, [organizeMode, productsInActiveCategoryOrdered, productsInActiveCategory, search]);
@@ -195,10 +190,6 @@ export function CaixaView() {
     setStep("categories");
     setActiveCategory(null);
     setSearch("");
-    draggingProductRef.current = null;
-    setDraggingProduct(null);
-    setDragOverCategoryId(null);
-    setDragOverProductId(null);
   };
 
   const openCategory = (c: Category) => {
@@ -215,39 +206,31 @@ export function CaixaView() {
   const toggleOrganizeMode = () => {
     setOrganizeMode((v) => {
       if (v) {
-        draggingProductRef.current = null;
-        setDraggingProduct(null);
-        setDragOverCategoryId(null);
-        setDragOverProductId(null);
         setProductOrderByCategory({});
+        setSearch("");
       } else {
         setKeypadTarget(null);
+        setSearch("");
       }
       return !v;
     });
   };
 
-  const handleDropOnCategory = useCallback(
-    async (target: Category) => {
-      if (!organizeMode) return;
-      const p = draggingProductRef.current;
+  const moveProductToCategory = useCallback(
+    async (productId: string, categoryId: string) => {
+      if (!organizeModeRef.current) return;
+      const p = products.find((x) => x.id === productId);
       if (!p) return;
+      const target = categories.find((c) => c.id === categoryId);
+      if (!target) return;
       const fromId = effectiveCategoryId(p);
-      if (fromId === target.id) {
-        draggingProductRef.current = null;
-        setDraggingProduct(null);
-        setDragOverCategoryId(null);
-        setDragOverProductId(null);
-        return;
-      }
+      if (fromId === target.id) return;
+
       const snapshot = [...products];
       setProducts((list) =>
         list.map((x) => (x.id === p.id ? { ...x, category_id: target.id } : x))
       );
-      draggingProductRef.current = null;
-      setDraggingProduct(null);
-      setDragOverCategoryId(null);
-      setDragOverProductId(null);
+
       const supabase = createClient();
       const { userId, errorMessage } = await resolveEffectiveUserId(supabase);
       if (!userId) {
@@ -263,63 +246,15 @@ export function CaixaView() {
         window.setTimeout(() => setDndNotice(null), 4000);
       }
     },
-    [organizeMode, products, effectiveCategoryId]
+    [products, categories, effectiveCategoryId]
   );
 
-  const categoryDropProps = useCallback(
-    (c: Category) => ({
-      onDragOver: (e: React.DragEvent) => {
-        if (!organizeMode || !draggingProductRef.current) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-      },
-      onDragEnter: () => {
-        if (!organizeMode || !draggingProductRef.current) return;
-        setDragOverCategoryId(c.id);
-      },
-      onDragLeave: (e: React.DragEvent) => {
-        if (!organizeMode || !draggingProductRef.current) return;
-        const rel = e.relatedTarget as Node | null;
-        if (rel && e.currentTarget.contains(rel)) return;
-        setDragOverCategoryId((cur) => (cur === c.id ? null : cur));
-      },
-      onDrop: (e: React.DragEvent) => {
-        if (!organizeMode || !draggingProductRef.current) return;
-        e.preventDefault();
-        void handleDropOnCategory(c);
-      },
-    }),
-    [organizeMode, handleDropOnCategory]
-  );
-
-  const handleProductCardReorderDrop = useCallback(
-    (targetProductId: string) => {
-      const drag = draggingProductRef.current;
-      if (!organizeMode || !activeCategory || !drag) return;
-      const dragId = drag.id;
-      if (dragId === targetProductId) return;
-      const targetP = products.find((x) => x.id === targetProductId);
-      if (!targetP) return;
-      if (effectiveCategoryId(drag) !== activeCategory.id) return;
-      if (effectiveCategoryId(targetP) !== activeCategory.id) return;
-
-      setProductOrderByCategory((prev) => {
-        const catId = activeCategory.id;
-        const baseIds =
-          prev[catId] && prev[catId].length > 0
-            ? [...prev[catId]]
-            : productsInActiveCategory.map((x) => x.id);
-        const arr = [...baseIds];
-        const di = arr.indexOf(dragId);
-        const ti = arr.indexOf(targetProductId);
-        if (di === -1 || ti === -1) return prev;
-        arr.splice(di, 1);
-        const newTi = arr.indexOf(targetProductId);
-        arr.splice(newTi, 0, dragId);
-        return { ...prev, [catId]: arr };
-      });
+  const reorderProductsInActiveCategory = useCallback(
+    (orderedIds: string[]) => {
+      if (!activeCategory) return;
+      setProductOrderByCategory((prev) => ({ ...prev, [activeCategory.id]: orderedIds }));
     },
-    [organizeMode, activeCategory, products, effectiveCategoryId, productsInActiveCategory]
+    [activeCategory]
   );
 
   const usedInCartForProduct = (productId: string) =>
@@ -481,46 +416,6 @@ export function CaixaView() {
   const productCardClass =
     "flex min-h-24 flex-col items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm transition hover:border-emerald-300 hover:shadow-md active:bg-slate-50";
 
-  const productCardClassOrganize =
-    "relative flex min-h-[6.5rem] flex-col items-center justify-center gap-1.5 rounded-2xl border-2 border-dashed border-violet-300/90 bg-violet-50/50 p-3 pt-9 text-center shadow-sm transition hover:border-violet-400 hover:bg-violet-50/80";
-
-  const productDragHandleClass =
-    "absolute left-2 top-2 z-[1] flex h-9 w-9 cursor-grab touch-none select-none items-center justify-center rounded-lg border border-violet-400/80 bg-white text-violet-700 shadow-sm transition hover:border-violet-500 hover:bg-violet-50 active:cursor-grabbing";
-
-  const categoryDropCardClass = (catId: string, compact?: boolean) =>
-    [
-      "flex shrink-0 flex-col items-center justify-center rounded-2xl border bg-white text-center shadow-sm transition",
-      compact ? "min-h-[5.5rem] w-[6.5rem] px-2 py-2" : "min-h-28 min-w-[7rem] flex-1 px-3 py-3 sm:min-w-[8rem]",
-      organizeMode && draggingProduct && dragOverCategoryId === catId
-        ? "scale-[1.03] border-violet-600 ring-2 ring-violet-400 ring-offset-2"
-        : "border-slate-200 hover:border-emerald-300",
-      organizeMode && draggingProduct ? "cursor-grab" : "",
-    ].join(" ");
-
-  const renderCategoryDropTargets = (compact: boolean) => (
-    <div className={compact ? "flex flex-nowrap gap-2 overflow-x-auto pb-1" : "flex flex-wrap justify-center gap-2"}>
-      {categories.map((c) => (
-        <div
-          key={c.id}
-          {...categoryDropProps(c)}
-          className={categoryDropCardClass(c.id, compact)}
-          role="presentation"
-        >
-          <span className={compact ? "text-2xl" : "text-3xl"} aria-hidden>
-            {emojiForCategory(c.name)}
-          </span>
-          <span
-            className={`mt-1 line-clamp-2 font-semibold text-slate-800 ${compact ? "text-[11px] leading-tight" : "text-xs"}`}
-          >
-            {c.name}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-
-  const showDndChrome = organizeMode && draggingProduct !== null;
-
   if (loading) {
     return (
       <div className="rounded-2xl bg-white p-8 text-center text-slate-600 shadow">Carregando…</div>
@@ -553,8 +448,8 @@ export function CaixaView() {
           className="rounded-xl border border-violet-200/80 bg-violet-50/90 px-4 py-2.5 text-sm text-violet-950"
           role="status"
         >
-          Modo organização ativo — use a alça no canto do card para arrastar. Solte em outra categoria ou sobre outro
-          produto para reordenar (ordem visual nesta sessão).
+          Modo organização — arraste o card do produto. Solte sobre outro produto para reordenar (só nesta sessão) ou
+          sobre uma categoria para mover.
         </p>
       ) : null}
 
@@ -575,69 +470,24 @@ export function CaixaView() {
             organizeMode ? "ring-2 ring-violet-400 ring-offset-2 ring-offset-slate-50" : ""
           }`}
         >
-          {showDndChrome && step === "products" ? (
-            <div className="sticky top-0 z-20 mb-2 rounded-xl border-2 border-violet-300 bg-violet-50/95 px-3 py-3 shadow-md backdrop-blur-sm">
-              <p className="mb-2 text-center text-xs font-semibold text-violet-900">
-                Solte em uma categoria para mover o produto
-              </p>
-              {renderCategoryDropTargets(true)}
-            </div>
-          ) : null}
-
-          {showDndChrome && step === "categories" ? (
-            <div className="sticky top-0 z-20 mb-2 rounded-xl border-2 border-violet-300 bg-violet-50/95 px-3 py-3 shadow-md backdrop-blur-sm">
-              <p className="mb-2 text-center text-xs font-semibold text-violet-900">
-                Solte em uma categoria para mover o produto
-              </p>
-              {renderCategoryDropTargets(true)}
-            </div>
-          ) : null}
-
           {step === "categories" ? (
             <>
               <p className="text-slate-600">Escolha uma categoria para ver os produtos.</p>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {categories.map((c) =>
-                  organizeMode ? (
-                    <div
-                      key={c.id}
-                      {...categoryDropProps(c)}
-                      className={`flex min-h-28 flex-col items-center justify-between gap-2 rounded-2xl border-2 bg-white p-3 text-center shadow-sm transition ${
-                        showDndChrome && dragOverCategoryId === c.id
-                          ? "border-violet-600 ring-2 ring-violet-400"
-                          : "border-violet-200"
-                      }`}
-                    >
-                      <div className="flex flex-1 flex-col items-center justify-center gap-1">
-                        <span className="text-4xl" aria-hidden>
-                          {emojiForCategory(c.name)}
-                        </span>
-                        <span className="text-sm font-semibold text-slate-800">{c.name}</span>
-                        <span className="text-[10px] font-medium text-violet-700">Alvo de soltura</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => openCategory(c)}
-                        className="w-full min-h-10 rounded-lg border border-slate-300 bg-white text-sm font-semibold text-slate-800 hover:bg-slate-50"
-                      >
-                        Abrir
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => openCategory(c)}
-                      className={productCardClass}
-                    >
-                      <span className="text-4xl" aria-hidden>
-                        {emojiForCategory(c.name)}
-                      </span>
-                      <span className="text-sm font-semibold text-slate-800">{c.name}</span>
-                      <span className="text-xs text-slate-500">Abrir</span>
-                    </button>
-                  )
-                )}
+                {categories.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => openCategory(c)}
+                    className={productCardClass}
+                  >
+                    <span className="text-4xl" aria-hidden>
+                      {emojiForCategory(c.name)}
+                    </span>
+                    <span className="text-sm font-semibold text-slate-800">{c.name}</span>
+                    <span className="text-xs text-slate-500">Abrir</span>
+                  </button>
+                ))}
                 <button
                   type="button"
                   onClick={() => setNewCategoryOpen(true)}
@@ -668,13 +518,19 @@ export function CaixaView() {
                   <h2 className="truncate text-xl font-bold text-slate-900">{activeCategory.name}</h2>
                 </div>
               </div>
-              <input
-                type="search"
-                placeholder="Buscar nesta categoria…"
-                className="w-full rounded-xl border border-slate-300 px-4 py-3 text-lg outline-none ring-emerald-500 focus:ring-2"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+              {organizeMode ? (
+                <p className="rounded-lg border border-violet-100 bg-violet-50/50 px-3 py-2 text-sm text-violet-900">
+                  Busca desligada no modo organizar — mostrando todos os produtos desta categoria.
+                </p>
+              ) : (
+                <input
+                  type="search"
+                  placeholder="Buscar nesta categoria…"
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-lg outline-none ring-emerald-500 focus:ring-2"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              )}
               {productsInActiveCategory.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 px-6 py-12 text-center shadow-sm">
                   <p className="text-lg font-medium text-slate-800">Nenhum produto aqui ainda</p>
@@ -701,122 +557,46 @@ export function CaixaView() {
                     Limpar busca
                   </button>
                 </div>
+              ) : organizeMode ? (
+                <CaixaOrganizeProductWorkspace
+                  categories={categories}
+                  products={searchFilteredProducts}
+                  onReorderProducts={reorderProductsInActiveCategory}
+                  onMoveProductToCategory={moveProductToCategory}
+                  onAddProduct={() => setProductModalOpen(true)}
+                  emojiForCategory={emojiForCategory}
+                  formatBRL={formatBRL}
+                  novoProductButtonClassName={`${productCardClass} border-dashed border-emerald-400 bg-emerald-50/80 hover:bg-emerald-100`}
+                />
               ) : (
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                  {searchFilteredProducts.map((p) =>
-                    organizeMode ? (
-                      <div
-                        key={p.id}
-                        role="group"
-                        aria-label={`${p.name} — modo organização`}
-                        className={`${productCardClassOrganize} ${
-                          draggingProduct?.id === p.id ? "opacity-[0.45] shadow-md" : ""
-                        } ${
-                          dragOverProductId === p.id &&
-                          draggingProductRef.current &&
-                          draggingProductRef.current.id !== p.id
-                            ? "border-violet-600 bg-violet-100 ring-2 ring-violet-400 ring-offset-1"
-                            : ""
-                        }`}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                        }}
-                        onDragOver={(e) => {
-                          const drag = draggingProductRef.current;
-                          if (!drag || drag.id === p.id) return;
-                          e.preventDefault();
-                          e.dataTransfer.dropEffect = "move";
-                          setDragOverProductId(p.id);
-                        }}
-                        onDragLeave={(e) => {
-                          const rel = e.relatedTarget as Node | null;
-                          if (rel && e.currentTarget.contains(rel)) return;
-                          setDragOverProductId((cur) => (cur === p.id ? null : cur));
-                        }}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleProductCardReorderDrop(p.id);
-                          setDragOverProductId(null);
-                        }}
-                      >
-                        <div
-                          data-caixa-drag-handle
-                          draggable={true}
-                          tabIndex={0}
-                          aria-grabbed={draggingProduct?.id === p.id}
-                          title="Arrastar produto"
-                          className={productDragHandleClass}
-                          onDragStart={(e) => {
-                            e.dataTransfer.setData(DND_MIME, p.id);
-                            e.dataTransfer.setData("text/plain", p.id);
-                            e.dataTransfer.effectAllowed = "move";
-                            draggingProductRef.current = p;
-                            queueMicrotask(() => setDraggingProduct(p));
-                          }}
-                          onDragEnd={() => {
-                            draggingProductRef.current = null;
-                            setDraggingProduct(null);
-                            setDragOverCategoryId(null);
-                            setDragOverProductId(null);
-                          }}
-                          onClick={(ev) => {
-                            ev.preventDefault();
-                            ev.stopPropagation();
-                          }}
-                        >
-                          <span className="flex flex-col gap-0.5" aria-hidden>
-                            <span className="h-0.5 w-4 rounded-full bg-current" />
-                            <span className="h-0.5 w-4 rounded-full bg-current" />
-                            <span className="h-0.5 w-4 rounded-full bg-current" />
-                          </span>
-                        </div>
-                        <span className="text-3xl" aria-hidden>
-                          {p.icon ?? "📦"}
+                  {searchFilteredProducts.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => {
+                        if (organizeModeRef.current) return;
+                        setKeypadTarget({ product: p });
+                      }}
+                      className={`${productCardClass} cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-emerald-500`}
+                    >
+                      <span className="text-3xl" aria-hidden>
+                        {p.icon ?? "📦"}
+                      </span>
+                      <span className="text-sm font-semibold text-slate-800">{p.name}</span>
+                      {p.type === "quantity" ? (
+                        <span className="text-xs text-slate-500">{formatBRL(p.price)} / un.</span>
+                      ) : p.type === "typed_value" ? (
+                        <span className="text-xs text-slate-500">
+                          {p.price > 0 ? `Ref. ${formatBRL(p.price)}` : "Digite o valor"}
                         </span>
-                        <span className="text-sm font-semibold text-slate-800">{p.name}</span>
-                        {p.type === "quantity" ? (
-                          <span className="text-xs text-slate-500">{formatBRL(p.price)} / un.</span>
-                        ) : p.type === "typed_value" ? (
-                          <span className="text-xs text-slate-500">
-                            {p.price > 0 ? `Ref. ${formatBRL(p.price)}` : "Digite o valor"}
-                          </span>
-                        ) : p.price > 0 ? (
-                          <span className="text-xs text-slate-500">Ref. {formatBRL(p.price)}</span>
-                        ) : (
-                          <span className="text-xs text-slate-500">Valor manual</span>
-                        )}
-                        <span className="text-[10px] font-medium text-violet-800/90">Alça para arrastar</span>
-                      </div>
-                    ) : (
-                      <button
-                        key={p.id}
-                        type="button"
-                        onClick={() => {
-                          if (organizeModeRef.current) return;
-                          setKeypadTarget({ product: p });
-                        }}
-                        className={`${productCardClass} cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-emerald-500`}
-                      >
-                        <span className="text-3xl" aria-hidden>
-                          {p.icon ?? "📦"}
-                        </span>
-                        <span className="text-sm font-semibold text-slate-800">{p.name}</span>
-                        {p.type === "quantity" ? (
-                          <span className="text-xs text-slate-500">{formatBRL(p.price)} / un.</span>
-                        ) : p.type === "typed_value" ? (
-                          <span className="text-xs text-slate-500">
-                            {p.price > 0 ? `Ref. ${formatBRL(p.price)}` : "Digite o valor"}
-                          </span>
-                        ) : p.price > 0 ? (
-                          <span className="text-xs text-slate-500">Ref. {formatBRL(p.price)}</span>
-                        ) : (
-                          <span className="text-xs text-slate-500">Valor manual</span>
-                        )}
-                      </button>
-                    )
-                  )}
+                      ) : p.price > 0 ? (
+                        <span className="text-xs text-slate-500">Ref. {formatBRL(p.price)}</span>
+                      ) : (
+                        <span className="text-xs text-slate-500">Valor manual</span>
+                      )}
+                    </button>
+                  ))}
                   <button
                     type="button"
                     onClick={() => setProductModalOpen(true)}
@@ -932,18 +712,6 @@ export function CaixaView() {
           ) : null}
         </aside>
       </div>
-
-      {showDndChrome ? (
-        <div
-          className="fixed inset-x-0 bottom-0 z-[41] border-t-2 border-violet-300 bg-violet-50/95 px-3 py-3 shadow-[0_-8px_30px_rgba(0,0,0,0.12)] backdrop-blur-md lg:inset-auto lg:bottom-6 lg:right-6 lg:w-full lg:max-w-xl lg:rounded-2xl lg:border lg:shadow-lg"
-          style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
-        >
-          <p className="mb-2 text-center text-xs font-semibold text-violet-900">
-            Categorias — solte para mover o produto
-          </p>
-          {renderCategoryDropTargets(true)}
-        </div>
-      ) : null}
 
       <CategoryNameModal
         open={newCategoryOpen}
